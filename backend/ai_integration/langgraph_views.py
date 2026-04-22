@@ -1,0 +1,1800 @@
+import os
+import json
+import time
+import re as regex
+import threading
+import hashlib
+import asyncio
+import base64
+import uuid
+from queue import Queue
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+from django.http import StreamingHttpResponse, JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.core.cache import cache
+from company_reviews.models import CompanyInfo
+from ai_integration.models import AIConversation, AITag, CareerEvaluationRecord, CareerPlanReport, AIUsageRecord, CareerRecommendationRecord, AIChatPair
+from django.contrib.auth import get_user_model
+from rest_framework.decorators import api_view, authentication_classes, permission_classes
+from rest_framework.authentication import TokenAuthentication
+from rest_framework.permissions import AllowAny
+import logging
+import lancedb
+import pyarrow as pa
+import websockets
+
+# LangGraph integration
+from ai_integration.langgraph.graphs.graph import create_chat_workflow
+from ai_integration.langgraph.tools.time_tool import get_time
+from ai_integration.langgraph.agents.memory_agent import memory_agent
+
+# A-RAG integration
+from ai_integration.arag_integration import get_career_search, ARAGCareerSearch
+
+logger = logging.getLogger(__name__)
+
+# 全局线程池
+_thread_pool = ThreadPoolExecutor(max_workers=3)
+
+# 内存缓存
+_memory_cache = {}
+_cache_lock = threading.Lock()
+
+def _get_cache_key(text: str) -> str:
+    """生成缓存键"""
+    return hashlib.md5(text.encode()).hexdigest()
+
+def _get_cached_result(query: str):
+    """获取缓存结果"""
+    cache_key = _get_cache_key(query)
+    
+    # 检查内存缓存
+    with _cache_lock:
+        if cache_key in _memory_cache:
+            cached_data = _memory_cache[cache_key]
+            if time.time() - cached_data["timestamp"] < 3600:  # 1小时过期
+                logger.info(f"Memory cache hit for query: {query[:50]}...")
+                return cached_data["result"]
+    
+    # 检查Django缓存
+    cached_result = cache.get(f"career_search_{cache_key}")
+    if cached_result:
+        logger.info(f"Django cache hit for query: {query[:50]}...")
+        return cached_result
+    
+    return None
+
+def _set_cached_result(query: str, result):
+    """设置缓存结果"""
+    cache_key = _get_cache_key(query)
+    
+    # 保存到内存缓存
+    with _cache_lock:
+        _memory_cache[cache_key] = {
+            "result": result,
+            "timestamp": time.time()
+        }
+    
+    # 保存到Django缓存
+    cache.set(f"career_search_{cache_key}", result, 3600)
+
+# LanceDB integration
+def init_lancedb():
+    """初始化LanceDB数据库"""
+    # 创建LanceDB数据库目录
+    db_path = os.path.join(os.path.dirname(__file__), "lancedb")
+    os.makedirs(db_path, exist_ok=True)
+    
+    # 连接到LanceDB
+    db = lancedb.connect(db_path)
+    
+    # 创建表（如果不存在）
+    table_name = "career_recommendations"
+    if table_name not in db.table_names():
+        # 定义表结构
+        schema = pa.schema([
+            ("id", pa.string()),
+            ("user_id", pa.string()),
+            ("self_introduction", pa.string()),
+            ("recommendations", pa.string()),
+            ("analysis_result", pa.string()),
+            ("created_at", pa.string())
+        ])
+        db.create_table(table_name, schema=schema)
+    
+    return db
+
+def add_to_lancedb(record):
+    """将职业推荐记录添加到LanceDB中"""
+    try:
+        # 初始化LanceDB
+        db = init_lancedb()
+        table = db["career_recommendations"]
+        
+        # 准备数据
+        data = {
+            "id": str(record.id),
+            "user_id": str(record.user.id) if record.user else "",
+            "self_introduction": record.self_introduction,
+            "recommendations": str(record.recommendations),
+            "analysis_result": record.analysis_result or "",
+            "created_at": record.created_at.isoformat()
+        }
+        
+        # 添加数据到LanceDB
+        table.add([data])
+        logger.info(f"Successfully added career recommendation record {record.id} to LanceDB")
+    except Exception as e:
+        logger.error(f"Error adding career recommendation record to LanceDB: {str(e)}")
+
+def search_lancedb(self_introduction, threshold=0.7):
+    """从LanceDB中检索匹配的职业推荐记录"""
+    try:
+        # 初始化LanceDB
+        db = init_lancedb()
+        table = db["career_recommendations"]
+        
+        # 获取所有记录
+        results = table.to_pandas().to_dict('records')
+        
+        logger.info(f"Found {len(results)} records in LanceDB")
+        
+        # 过滤结果，只返回匹配度高的记录
+        # 使用简单的关键词匹配算法
+        filtered_results = []
+        for result in results:
+            # 计算关键词匹配度
+            query_words = set(self_introduction.lower().split())
+            record_words = set(result["self_introduction"].lower().split())
+            
+            # 避免除以零
+            if not query_words:
+                continue
+                
+            common_words = query_words.intersection(record_words)
+            match_score = len(common_words) / len(query_words)
+            
+            logger.info(f"Record ID: {result['id']}, Match score: {match_score}")
+            
+            if match_score >= threshold:
+                result["match_score"] = match_score
+                filtered_results.append(result)
+        
+        logger.info(f"Filtered to {len(filtered_results)} matches with score >= {threshold}")
+        
+        # 按匹配度排序
+        filtered_results.sort(key=lambda x: x.get("match_score", 0), reverse=True)
+        
+        return filtered_results
+    except Exception as e:
+        logger.error(f"Error searching LanceDB: {str(e)}")
+        return []
+
+logger = logging.getLogger(__name__)
+
+User = get_user_model()
+
+# LangGraph workflow will be created per request
+
+def extract_search_params(message):
+    """从用户消息中提取搜索参数"""
+    # 检查是否是时间相关问题
+    time_keywords = ['时间', '几点', '几号', '今天', '现在']
+    is_time_question = any(keyword in message for keyword in time_keywords)
+    
+    if is_time_question:
+        # 时间相关问题返回空参数，不执行数据库查询
+        return {}
+    
+    cities = ['北京', '上海', '广州', '深圳', '杭州', '成都', '南京', '武汉', '西安', '重庆', '长沙', '天津', 
+              '苏州', '郑州', '东莞', '佛山', '宁波', '青岛', '无锡', '厦门', '济南', '合肥', '福州', '石家庄']
+    city = None
+    for c in cities:
+        if c in message:
+            city = c
+            break
+    
+    job_keywords = ['前端', '后端', 'Java', 'Python', '产品', '运营', '测试', '运维', '算法', 
+                    '大数据', 'AI', '人工智能', '开发', '工程师', '经理', '主管', 'UI', '设计',
+                    '数据分析', '数据', '架构师', '安全', '网络', '嵌入式', '硬件', '科研']
+    job_title = None
+    for keyword in job_keywords:
+        if keyword in message:
+            job_title = keyword
+            break
+    
+    industries = ['互联网', '金融', '教育', '医疗', '电商', '游戏', '软件', '硬件', '制造', '建筑']
+    industry = None
+    for ind in industries:
+        if ind in message:
+            industry = ind
+            break
+    
+    salary_min = None
+    salary_max = None
+    salary_patterns = [
+        r'(\d+)k?-(\d+)k?',
+        r'(\d+)万',
+        r'薪资(\d+)',
+    ]
+    for pattern in salary_patterns:
+        match = regex.search(pattern, message)
+        if match:
+            if len(match.groups()) >= 2:
+                salary_min = int(match.group(1)) * 1000
+                salary_max = int(match.group(2)) * 1000
+            else:
+                salary_min = int(match.group(1)) * 1000
+            break
+    
+    return {
+        'city': city,
+        'job_title': job_title,
+        'industry': industry,
+        'salary_min': salary_min,
+        'salary_max': salary_max
+    }
+
+def search_company_info(params):
+    """根据参数搜索公司职位信息"""
+    queryset = CompanyInfo.objects.all()
+    
+    if params.get('city'):
+        queryset = queryset.filter(address__icontains=params['city'])
+    
+    if params.get('job_title'):
+        queryset = queryset.filter(job_title__icontains=params['job_title'])
+    
+    if params.get('industry'):
+        queryset = queryset.filter(industry__icontains=params['industry'])
+    
+    queryset = queryset.order_by('-update_date')[:20]
+    
+    return list(queryset)
+
+def build_prompt_with_company_info(user_message, companies_info, chat_history=None):
+    """构建包含数据库查询结果的提示词"""
+    # 检查是否是时间相关问题（更全面的时间关键词）
+    time_keywords = ['时间', '几点', '几号', '今天', '现在', '日期', '星期', '几点钟', '何时', '此刻']
+    is_time_question = any(keyword in user_message for keyword in time_keywords)
+    
+    if is_time_question:
+        # 时间相关问题直接返回时间
+        current_time = get_time()
+        return f"当前时间是：{current_time}"
+    
+    if not companies_info:
+        # 构建包含对话历史的提示词
+        prompt = ""
+        
+        # 添加对话历史
+        if chat_history:
+            prompt += "对话历史：\n"
+            for msg in chat_history:
+                if msg['user']:
+                    prompt += f"用户：{msg['user']}\n"
+            prompt += "\n"
+        
+        prompt += f"用户问：{user_message}\n\n数据库中没有找到相关公司职位信息，请根据你的知识回答用户的问题。"
+        
+        return prompt
+    
+    prompt = ""
+    
+    # 添加对话历史
+    if chat_history:
+        prompt += "对话历史：\n"
+        for msg in chat_history:
+            if msg['user']:
+                prompt += f"用户：{msg['user']}\n"
+        prompt += "\n"
+    
+    prompt += f"用户问：{user_message}\n\n从数据库中查到以下相关公司职位信息（基于真实数据，共{len(companies_info)}条）：\n\n"
+    
+    company_dict = {}
+    for info in companies_info:
+        if info.company_name not in company_dict:
+            company_dict[info.company_name] = {
+                'name': info.company_name,
+                'address': info.address,
+                'scale': info.company_scale,
+                'type': info.company_type,
+                'industry': info.industry,
+                'details': info.company_details[:200] if info.company_details else '',
+                'jobs': []
+            }
+        company_dict[info.company_name]['jobs'].append({
+            'title': info.job_title,
+            'salary': info.salary_range,
+            'details': info.job_details[:100] if info.job_details else ''
+        })
+    
+    for idx, (name, data) in enumerate(list(company_dict.items())[:10], 1):
+        prompt += f"【公司{idx}】\n"
+        prompt += f"公司名称：{data['name']}\n"
+        prompt += f"地址：{data['address']}\n"
+        prompt += f"规模：{data['scale']}\n"
+        prompt += f"类型：{data['type']}\n"
+        prompt += f"行业：{data['industry']}\n"
+        if data['details']:
+            prompt += f"公司介绍：{data['details']}...\n"
+        
+        if data['jobs']:
+            prompt += f"相关职位：\n"
+            for job in data['jobs'][:3]:
+                prompt += f"   - {job['title']}（{job['salary']}）\n"
+        
+        prompt += "\n"
+    
+    # 从数据库获取提示词
+    from ai_integration.langgraph.utils.prompt_manager import get_prompt
+    recommendation_prompt = get_prompt('recommendation')
+    # 提取公司信息相关的提示词部分
+    if '当提供公司信息时' in recommendation_prompt:
+        company_prompt = recommendation_prompt.split('当提供公司信息时，')[1].split('当需要职业推荐时')[0]
+        prompt += f"请根据以上真实数据回答用户问题。你应该：{company_prompt}"
+    else:
+        # 备用提示词
+        prompt += f"请根据以上真实数据回答用户问题。你应该：\n"
+        prompt += f"1. 先总结找到{len(company_dict)}家相关公司\n"
+        prompt += f"2. 详细介绍这些公司的信息（包括规模、类型、行业等）\n"
+        prompt += f"3. 重点介绍相关职位和薪资情况\n"
+        prompt += f"4. 给出求职建议\n"
+    
+    return prompt
+
+@csrf_exempt
+def llm_chat(request):
+    # 记录开始时间
+    start_time = time.time()
+    
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Method not allowed'}, status=405)
+    
+    try:
+        # 解析请求数据
+        if request.FILES:
+            user_message = request.POST.get('message', '')
+            mode = request.POST.get('mode', '')
+            interview_style = request.POST.get('interview_style', '')
+            session_id = request.POST.get('session_id', '')
+            if 'audio' in request.FILES:
+                audio_file = request.FILES['audio']
+                logger.info(f"Received audio file: {audio_file.name}, size: {audio_file.size}")
+        else:
+            data = json.loads(request.body)
+            user_message = data.get('message', '')
+            mode = data.get('mode', '')
+            interview_style = data.get('interview_style', '')
+            session_id = data.get('session_id', '')
+        
+        logger.info(f"Received message: {user_message}, mode: {mode}, session_id: {session_id}")
+        
+        # 检查用户消息是否为空
+        if not user_message:
+            return JsonResponse({'error': 'Message is required'}, status=400)
+        
+        # 确定对话模式
+        if mode == 'interview' or '【面试模式】' in user_message:
+            actual_mode = 'interview'
+        elif mode == 'interview_review' or '【面试复盘模式】' in user_message:
+            actual_mode = 'review'
+        elif mode == 'career_consultant' or mode == 'career' or '【职业规划师模式】' in user_message:
+            actual_mode = 'career'
+        else:
+            actual_mode = 'normal'
+        
+        # 处理会话ID
+        if not session_id:
+            session_id = os.urandom(16).hex()
+        
+        # 获取或创建会话
+        conversation, created = AIConversation.objects.get_or_create(
+            session_id=session_id,
+            defaults={
+                'mode': actual_mode,
+                'context_aware': True,
+                'short_term_memory_size': 10
+            }
+        )
+        
+        # 获取短期记忆（最近的用户发言）
+        chat_history = []
+        if conversation.context_aware:
+            # 获取最近的对话对，然后提取用户输入
+            recent_pairs = AIChatPair.objects.filter(conversation=conversation).order_by('-input_time')[:conversation.short_term_memory_size]
+            # 只提取用户输入，反转顺序以保持时间顺序
+            user_inputs = list(reversed([pair.user_input for pair in recent_pairs]))
+            # 构建聊天历史格式
+            chat_history = []
+            for user_input in user_inputs:
+                chat_history.append({
+                    'user': user_input,
+                    'ai': ''  # AI输出设为空，只保留用户输入
+                })
+        
+        logger.info(f"Chat history length: {len(chat_history)}")
+        
+        # 其他模式的处理
+        is_interview_mode = actual_mode == 'interview'
+        is_review_mode = actual_mode == 'review'
+        is_career_mode = actual_mode == 'career'
+        is_normal_mode = actual_mode == 'normal'
+        companies_info = []
+
+        if is_interview_mode or is_review_mode or is_normal_mode:
+            # 构建包含上下文的提示词
+            context_prompt = ""
+            if chat_history:
+                context_prompt = "\n\n对话历史：\n"
+                for i, msg in enumerate(chat_history):
+                    if msg['user']:  # 只添加非空的用户输入
+                        context_prompt += f"用户：{msg['user']}\n"
+            
+            enhanced_prompt = context_prompt + user_message
+            logger.info(f"{'Review' if is_review_mode else 'Interview' if is_interview_mode else 'Normal'} mode: using context-aware prompt")
+        else:
+            search_params = extract_search_params(user_message)
+            logger.info(f"Extracted search params: {search_params}")
+            
+            companies_info = search_company_info(search_params)
+            logger.info(f"Found {len(companies_info)} company records")
+            
+            # 构建包含上下文的提示词
+            context_prompt = ""
+            if chat_history:
+                context_prompt = "\n\n对话历史：\n"
+                for i, msg in enumerate(chat_history):
+                    if msg['user']:  # 只添加非空的用户输入
+                        context_prompt += f"用户：{msg['user']}\n"
+            
+            enhanced_prompt = build_prompt_with_company_info(user_message, companies_info, chat_history) + context_prompt
+        
+        logger.info(f"Enhanced prompt length: {len(enhanced_prompt)}")
+        
+        # 使用LangGraph工作流处理请求
+        try:
+            logger.info("Using LangGraph workflow to process request")
+            
+            # 限制提示词长度
+            max_prompt_length = 3000
+            if len(enhanced_prompt) > max_prompt_length:
+                enhanced_prompt = enhanced_prompt[:max_prompt_length] + "..."
+            
+            # 构建公司数据
+            companies_data = []
+            seen_companies = set()
+            for info in companies_info:
+                if info.company_name not in seen_companies:
+                    seen_companies.add(info.company_name)
+                    companies_data.append({
+                        'id': info.id,
+                        'name': info.company_name,
+                        'address': info.address,
+                        'scale': info.company_scale,
+                        'type': info.company_type,
+                        'industry': info.industry,
+                        'job_title': info.job_title,
+                        'salary_range': info.salary_range,
+                        'description': info.company_details[:200] if info.company_details else '',
+                        'job_details': info.job_details[:100] if info.job_details else ''
+                    })
+            
+            def llm_chat_tts_work(llm, messages, mq, is_interview_mode_flag):
+                async def run_tts_tasks():
+                    tts_api_key = os.getenv('api_key')
+                    wss_url = os.getenv('WSS_URL')
+
+                    if not is_interview_mode_flag:
+                        mq.put_nowait({'debug': "Not interview mode, returning text only"})
+                        for chunk in llm.stream(messages):
+                            if hasattr(chunk, "content") and chunk.content:
+                                mq.put_nowait({'content': chunk.content})
+                        return
+                    
+                    if not tts_api_key:
+                        for chunk in llm.stream(messages):
+                            if hasattr(chunk, "content") and chunk.content:
+                                mq.put_nowait({'content': chunk.content})
+                        return
+                    
+                    if not wss_url:
+                        for chunk in llm.stream(messages):
+                            if hasattr(chunk, "content") and chunk.content:
+                                mq.put_nowait({'content': chunk.content})
+                        return
+             
+                    headers = {"Authorization": f"Bearer {tts_api_key}"}
+                    
+                    try:
+                    
+                        llm_stream = llm.stream(messages)
+
+                        for chunk in llm_stream:
+                            if hasattr(chunk, "content"):
+                                mq.put_nowait({'debug': f"Chunk has content attribute, length: {len(chunk.content) if chunk.content else 0}"})
+                                if chunk.content:
+                                   
+                                    mq.put_nowait({'content': chunk.content})
+                                
+                                    break
+                            else:
+                                mq.put_nowait({'debug': "Chunk has no content attribute"})
+                    
+                        async with websockets.connect(wss_url, additional_headers=headers) as ws:
+                            task_id = uuid.uuid4().hex
+                            run_task_msg = {
+                                "header": {
+                                    "action": "run-task",
+                                    "task_id": task_id,
+                                    "streaming": "duplex"
+                                },
+                                "payload": {
+                                    "task_group": "audio",
+                                    "task": "tts",
+                                    "function": "SpeechSynthesizer",
+                                    "model": "cosyvoice-v3-flash",
+                                    "parameters": {
+                                        "text_type": "PlainText",
+                                        "voice": "longanyang",
+                                        "format": "mp3",
+                                        "sample_rate": 22050,
+                                        "volume": 50,
+                                        "rate": 1.25,
+                                        "pitch": 1  
+                                    },
+                                    "input": { # input不能省去，不然会报错
+                                    }
+                                }
+                            }
+                            await ws.send(json.dumps(run_task_msg))
+                            
+                            # 等待大模型服务器发送 task-started
+                            async for msg in ws:
+                                data = json.loads(msg)
+                                mq.put_nowait({'debug': f"Received message event: {data.get('header', {}).get('event', 'unknown')}"})
+                                if data['header']['event'] == 'task-started':
+                                    mq.put_nowait({'debug': "Task started, beginning TTS stream"})
+                                    break
+                                    
+                            
+                            async def tts_sender():
+                                for chunk in llm_stream:
+                                    if hasattr(chunk, "content") and chunk.content:
+                                        content = chunk.content
+                                        
+                                        mq.put_nowait({'content': content})
+                                        await ws.send(json.dumps({
+                                            "header": {
+                                                "action": "continue-task",
+                                                "task_id": task_id,
+                                                "streaming": "duplex"
+                                            },
+                                            "payload": {"input": {"text": content}}
+                                        }))
+                                
+                                await ws.send(json.dumps({
+                                    "header": {
+                                        "action": "finish-task",
+                                        "task_id": task_id
+                                    },
+                                    "payload": {"input": {}}
+                                }))
+                            
+                            async def tts_receiver():
+                            
+                                async for msg in ws:
+                                    if isinstance(msg, bytes):
+                                        audio = base64.b64encode(msg).decode('utf8')
+                                      
+                                        mq.put_nowait({'audio': audio})
+                                    else:
+                                        
+                                        data = json.loads(msg)
+                                        event = data['header'].get('event', 'unknown')
+                                            
+                                        if event in ['task-finished', 'task-failed']:
+                                            break
+                                        
+                            await asyncio.gather(tts_sender(), tts_receiver())
+                            
+                    except Exception as e:
+                        mq.put_nowait({'debug': f"TTS error: {str(e)}"})
+                        logger.error(f"TTS error, falling back to text only: {str(e)}")
+                        for chunk in llm.stream(messages):
+                            if hasattr(chunk, "content") and chunk.content:
+                                mq.put_nowait({'content': chunk.content})
+                # work 协程
+                try:
+                    asyncio.run(run_tts_tasks())
+                
+                finally:
+                    
+                    mq.put_nowait(None)
+            
+            def stream_generator():
+                response_content = ""
+                
+                if companies_data:
+                    yield f'data: {{"type": "companies", "data": {json.dumps(companies_data, ensure_ascii=False)}}}\n\n'
+                
+                from langchain_openai import ChatOpenAI
+                
+                api_key = os.getenv('api_key')
+                base_url = os.getenv('base_url')
+                
+                llm = ChatOpenAI(
+                    model="qwen-turbo-2025-07-15", 
+                    temperature=0.7,
+                    api_key=api_key,
+                    base_url=base_url
+                )
+                
+                from ai_integration.langgraph.utils.prompt_manager import get_prompt
+                
+                if is_interview_mode:
+                    if interview_style == 'pressure':
+                        system_prompt = get_prompt('interview') + "\n\n风格：对面试人员使用及其压迫的提问方式，要求候选人在短时间内给出回答。"
+                    elif interview_style == 'technical':
+                        system_prompt = get_prompt('interview') + "\n\n风格：极致理性的硬核技术深挖，针对底层原理进行连环追问。"
+                    elif interview_style == 'behavioral':
+                        system_prompt = get_prompt('interview') + "\n\n风格：关注过往经历中的决策、冲突处理及团队协作等软技能。"
+                    else:
+                        system_prompt = get_prompt('interview') + "\n\n风格：语气友好亲切，侧重引导与交流，适合舒缓紧张感。"
+                elif is_career_mode:
+                    system_prompt = get_prompt('career')
+                else:
+                    system_prompt = get_prompt('chat')
+                
+                from langchain_core.messages import SystemMessage, HumanMessage
+                messages = [
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=enhanced_prompt)
+                ]
+
+                # event_stream 主线程-同步生成器
+                mq = Queue()
+                thread = threading.Thread(target=llm_chat_tts_work, args=(llm, messages, mq, is_interview_mode))
+                thread.start()
+                
+                try:
+                    while True:
+                        msg = mq.get()
+                        if msg is None:
+                            break
+                        if msg.get('content', None):
+                            response_content += msg['content']
+                            chunk_data = {"type": "chunk", "content": msg['content']}
+                            yield f'data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n'
+                        if msg.get('audio', None):
+                            audio_data = {"type": "audio", "audio": msg['audio']}
+                            yield f'data: {json.dumps(audio_data, ensure_ascii=False)}\n\n'
+                    
+                    yield "data: [DONE]\n\n"  # 这是一种约定俗成的结束标记
+                except Exception as e:
+                    logger.error(f"Error during streaming: {str(e)}")
+                    error_data = {"type": "error", "content": f"生成响应时出错: {str(e)}"}
+                    yield f'data: {json.dumps(error_data, ensure_ascii=False)}\n\n'
+                
+                if response_content:
+                    now = datetime.now()
+                    chat_pair = AIChatPair.objects.create(
+                        conversation=conversation,
+                        user_input=user_message,
+                        ai_output=response_content,
+                        input_time=now,
+                        output_time=now
+                    )
+                    
+                    def process_memory():
+                        try:
+                            memory_agent.process_conversation(session_id)
+                        except Exception as e:
+                            logger.error(f"Error processing memory in background: {str(e)}")
+                    
+                    memory_thread = threading.Thread(target=process_memory)
+                    memory_thread.daemon = True
+                    memory_thread.start()
+                    
+                    if conversation.context_aware:
+                        all_pairs = AIChatPair.objects.filter(conversation=conversation).order_by('-input_time')
+                        if all_pairs.count() > conversation.short_term_memory_size:
+                            oldest_pairs = all_pairs[conversation.short_term_memory_size:]
+                            for pair in oldest_pairs:
+                                pair.delete()
+                
+                yield f'data: {{"type": "end", "session_id": "{session_id}"}}\n\n'
+            
+            response = StreamingHttpResponse(stream_generator(), content_type='text/event-stream; charset=utf-8')
+            response['Content-Encoding'] = 'utf-8'
+            return response
+        except Exception as e:
+            logger.error(f"LangGraph execution error: {str(e)}")
+            
+            # 直接返回错误，不使用模拟响应
+            total_time = time.time() - start_time
+            return JsonResponse({
+                "success": False,
+                "error": f"LLM生成失败: {str(e)}",
+                "response_time": total_time
+            }, status=500)
+        
+    except Exception as e:
+        total_time = time.time() - start_time
+        logger.error(f"Error in llm_chat after {total_time:.2f}s: {str(e)}")
+        return JsonResponse({
+            "success": False,
+            "error": str(e),
+            "response_time": total_time
+        }, status=500)
+
+@api_view(['POST'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([AllowAny])
+def save_chat_record(request):
+    """保存聊天记录的API接口"""
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Method not allowed'}, status=405)
+    
+    try:
+        data = json.loads(request.body)
+        
+        session_id = data.get('session_id', '')
+        user_message = data.get('user_message', '')
+        assistant_message = data.get('assistant_message', '')
+        mode = data.get('mode', 'normal')
+        
+        if not session_id:
+            return JsonResponse({'error': 'session_id is required'}, status=400)
+        
+        user = None
+        logger.info(f"Request user: {request.user}")
+        logger.info(f"Request auth: {request.auth}")
+        logger.info(f"Is authenticated: {request.user.is_authenticated}")
+        if request.user.is_authenticated:
+            user = request.user
+        
+        conversation, created = AIConversation.objects.get_or_create(
+            session_id=session_id,
+            defaults={
+                'user': user,
+                'mode': mode
+            }
+        )
+        
+        if not created:
+            conversation.user = user
+            conversation.mode = mode
+            conversation.save()
+        
+        # 使用新的AIChatPair模型存储聊天记录
+        import datetime
+        now = datetime.datetime.now()
+        chat_pair = AIChatPair.objects.create(
+            conversation=conversation,
+            user_input=user_message,
+            ai_output=assistant_message,
+            input_time=now,
+            output_time=now
+        )
+        
+        # 根据聊天模式设置不同的使用类型
+        usage_type = 'chat'
+        if mode == 'career':
+            usage_type = 'career_consultant'
+        elif mode == 'normal':
+            usage_type = 'chat'
+        
+        # 保存统一使用记录
+        try:
+            AIUsageRecord.objects.create(
+                user=user,
+                usage_type=usage_type,
+                related_id=session_id
+            )
+        except Exception as e:
+            logger.error(f"Error creating AIUsageRecord: {str(e)}")
+        
+        logger.info(f"Chat record saved: session_id={session_id}, mode={mode}, user={user.username if user else 'anonymous'}")
+        
+        return JsonResponse({'success': True, 'conversation_id': conversation.id, 'pair_id': chat_pair.id})
+    
+    except Exception as e:
+        logger.error(f"Error in save_chat_record: {str(e)}")
+        return JsonResponse({'error': str(e)}, status=500)
+
+@api_view(['POST'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([AllowAny])
+def save_career_evaluation(request):
+    """保存职业评测记录的API接口"""
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Method not allowed'}, status=405)
+    
+    try:
+        data = json.loads(request.body)
+        
+        session_id = data.get('session_id', '')
+        selected_careers = data.get('selected_careers', [])
+        evaluation_result = data.get('evaluation_result', {})
+        
+        if not session_id:
+            return JsonResponse({'error': 'session_id is required'}, status=400)
+        
+        user = None
+        logger.info(f"Request user: {request.user}")
+        logger.info(f"Request auth: {request.auth}")
+        logger.info(f"Is authenticated: {request.user.is_authenticated}")
+        if request.user.is_authenticated:
+            user = request.user
+        
+        record, created = CareerEvaluationRecord.objects.get_or_create(
+            session_id=session_id,
+            defaults={
+                'user': user,
+                'selected_careers': selected_careers,
+                'evaluation_result': evaluation_result
+            }
+        )
+        
+        if not created:
+            record.user = user
+            record.selected_careers = selected_careers
+            record.evaluation_result = evaluation_result
+            record.save()
+        
+        # 保存统一使用记录
+        try:
+            AIUsageRecord.objects.create(
+                user=user,
+                usage_type='evaluation',
+                related_id=session_id
+            )
+        except Exception as e:
+            logger.error(f"Error creating AIUsageRecord: {str(e)}")
+        
+        logger.info(f"Career evaluation saved: session_id={session_id}, user={user.username if user else 'anonymous'}")
+        
+        return JsonResponse({'success': True, 'record_id': record.id})
+    
+    except Exception as e:
+        logger.error(f"Error in save_career_evaluation: {str(e)}")
+        return JsonResponse({'error': str(e)}, status=500)
+
+@api_view(['POST'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([AllowAny])
+def career_recommendation(request):
+    """职业推荐API接口 - 先从LanceDB检索匹配记录，再调用agent处理"""
+    # 记录开始时间
+    start_time = time.time()
+    
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Method not allowed'}, status=405)
+    
+    try:
+        data = json.loads(request.body)
+        self_introduction = data.get('self_introduction', '')
+        
+        if not self_introduction:
+            return JsonResponse({'error': 'self_introduction is required'}, status=400)
+        
+        logger.info(f"Received career recommendation request with self_introduction length: {len(self_introduction)}")
+        
+        # 先从LanceDB中检索匹配的职业推荐记录（不是缓存，是数据检索）
+        lancedb_start = time.time()
+        logger.info("Searching for matching recommendations in LanceDB")
+        lancedb_results = search_lancedb(self_introduction)
+        lancedb_end = time.time()
+        logger.info(f"LanceDB search took {lancedb_end - lancedb_start:.2f} seconds")
+        
+        # 创建工作流并执行（agent -> tool -> agent 流程）
+        llm_start = time.time()
+        chat_workflow = create_chat_workflow()
+        
+        # 正确构建状态 - 使用 messages（消息序列）而不是 message
+        from langchain_core.messages import HumanMessage
+        state = {
+            "messages": [HumanMessage(content=self_introduction)],
+            "mode": "recommendation",
+            "response": "",
+            "tool_calls": None,
+            "tool_results": None,
+            "last_agent": None,
+            "lancedb_results": lancedb_results  # 将LanceDB结果传入状态，供agent参考
+        }
+        
+        logger.info("Invoking LangGraph workflow for career recommendation")
+        logger.info(f"Input state: mode={state['mode']}, messages count={len(state['messages'])}, lancedb_results={len(lancedb_results) if lancedb_results else 0}")
+        result = chat_workflow.invoke(state)
+        logger.info(f"LangGraph result keys: {list(result.keys())}")
+        logger.info(f"LangGraph result: {result}")
+        
+        # 提取响应内容
+        response_content = result.get("response", "")
+        logger.info(f"Extracted response content: {response_content}")
+        # 记录完整的响应内容，以便调试
+        logger.info(f"Full response content length: {len(response_content)}")
+        if len(response_content) > 1000:
+            logger.info(f"First 1000 characters of response: {response_content[:1000]}...")
+        else:
+            logger.info(f"Full response: {response_content}")
+        
+        # 打印AI的原始输出，以便调试
+        print("\n=== AI ORIGINAL OUTPUT ===")
+        print(response_content)
+        print("=== END AI ORIGINAL OUTPUT ===\n")
+        llm_end = time.time()
+        logger.info(f"LLM generation took {llm_end - llm_start:.2f} seconds")
+        
+        # 生成会话ID
+        session_id = os.urandom(16).hex()
+        
+        # 保存推荐记录
+        user = None
+        if request.user.is_authenticated:
+            user = request.user
+        
+        # 尝试解析推荐结果为JSON格式
+        parse_start = time.time()
+        processed_recommendations = []
+        try:
+            # 打印AI的原始输出，以便调试
+            print("\n=== AI ORIGINAL OUTPUT ===")
+            print(response_content)
+            print("=== END AI ORIGINAL OUTPUT ===\n")
+            
+            # 尝试从响应内容中提取JSON格式的推荐结果
+            # 使用正则表达式提取JSON块
+            json_match = regex.search(r'```json\s*([\s\S]*?)\s*```', response_content)
+            if json_match:
+                clean_content = json_match.group(1).strip()
+                logger.info(f"Found JSON block: {clean_content[:200]}...")
+                
+                # 修复可能由转义大括号引起的问题
+                clean_content = clean_content.replace('{{', '{').replace('}}', '}')
+                
+                try:
+                    parsed_content = json.loads(clean_content, strict=False)
+                    logger.info(f"Parsed JSON content: {parsed_content}")
+                    
+                    if isinstance(parsed_content, dict) and 'recommendations' in parsed_content:
+                        # 如果已经是包含recommendations字段的对象
+                        processed_recommendations = parsed_content['recommendations']
+                        logger.info(f"Parsed recommendations from JSON: {processed_recommendations}")
+                    elif isinstance(parsed_content, list):
+                        # 如果直接是数组
+                        processed_recommendations = parsed_content
+                        logger.info(f"Using array recommendations: {processed_recommendations}")
+                except json.JSONDecodeError as e:
+                    logger.error(f"JSON decode failed: {str(e)}")
+            
+            # 如果没有从JSON中提取到推荐结果，尝试从文本中提取
+            if not processed_recommendations:
+                logger.info("No recommendations found in JSON, trying to extract from text")
+                # 尝试从文本中提取职业推荐
+                # 尝试匹配以###开头的职业名称
+                career_matches = regex.findall(r'###\s*(.*?)\s*', response_content)
+                logger.info(f"Found career matches: {career_matches}")
+                
+                # 构建推荐列表
+                for i, career in enumerate(career_matches[:3]):
+                    career_name = career.strip()
+                    if career_name:
+                        # 计算匹配度
+                        match_score = 90 - i*10
+                        processed_recommendations.append({
+                            "career": career_name,
+                            "matchScore": match_score,
+                            "reason": "基于您的背景和技能推荐",
+                            "skillsMatch": [],
+                            "missingSkills": [],
+                            "improvement": ""
+                        })
+                
+                logger.info(f"Extracted {len(processed_recommendations)} recommendations from text")
+        except Exception as e:
+            logger.error(f"Error parsing recommendations: {str(e)}")
+            # 如果解析失败，尝试从文本中提取
+            try:
+                logger.info("Trying to extract recommendations from text after error")
+                # 尝试从文本中提取职业推荐
+                # 尝试匹配以###开头的职业名称
+                career_matches = regex.findall(r'###\s*(.*?)\s*', response_content)
+                logger.info(f"Found career matches: {career_matches}")
+                
+                # 构建推荐列表
+                for i, career in enumerate(career_matches[:3]):
+                    career_name = career.strip()
+                    if career_name:
+                        # 计算匹配度
+                        match_score = 90 - i*10
+                        processed_recommendations.append({
+                            "career": career_name,
+                            "matchScore": match_score,
+                            "reason": "基于您的背景和技能推荐",
+                            "skillsMatch": [],
+                            "missingSkills": [],
+                            "improvement": ""
+                        })
+                
+                logger.info(f"Extracted {len(processed_recommendations)} recommendations from text after error")
+            except Exception as parse_error:
+                logger.error(f"Error parsing recommendations from text: {str(parse_error)}")
+                # 如果解析失败，使用默认推荐
+                processed_recommendations = []
+        
+        # 确保推荐列表中没有重复的职业
+        seen_careers = set()
+        unique_recommendations = []
+        for rec in processed_recommendations:
+            career = rec.get('career', '').strip()
+            if career and career not in seen_careers:
+                seen_careers.add(career)
+                unique_recommendations.append(rec)
+        
+        # 确保至少返回三个推荐
+        if len(unique_recommendations) < 3:
+            logger.warning(f"Only found {len(unique_recommendations)} recommendations, using fallback data")
+            # 如果没有成功解析出任何推荐或者推荐数量不足，才使用默认推荐
+            fallback_recommendations = [
+                {
+                    "career": "算法工程师",
+                    "matchScore": 90,
+                    "reason": "基于您的技能和兴趣，算法工程师是一个很好的选择。",
+                    "skillsMatch": [],
+                    "missingSkills": [],
+                    "improvement": ""
+                },
+                {
+                    "career": "机器学习工程师",
+                    "matchScore": 80,
+                    "reason": "机器学习工程师也是一个与您技能匹配的职业选择。",
+                    "skillsMatch": [],
+                    "missingSkills": [],
+                    "improvement": ""
+                },
+                {
+                    "career": "数据科学家",
+                    "matchScore": 70,
+                    "reason": "数据科学家是另一个适合您技能背景的职业方向。",
+                    "skillsMatch": [],
+                    "missingSkills": [],
+                    "improvement": ""
+                }
+            ]
+            
+            for fallback in fallback_recommendations:
+                if len(unique_recommendations) >= 3:
+                    break
+                career = fallback.get('career')
+                if career not in seen_careers:
+                    seen_careers.add(career)
+                    unique_recommendations.append(fallback)
+        
+        # 确保最终只有三个推荐
+        processed_recommendations = unique_recommendations[:3]
+        logger.info(f"Final recommendations: {[rec.get('career') for rec in processed_recommendations]}")
+        parse_end = time.time()
+        logger.info(f"Recommendation parsing took {parse_end - parse_start:.2f} seconds")
+        
+        # 保存推荐记录到数据库
+        db_start = time.time()
+        record, created = CareerRecommendationRecord.objects.get_or_create(
+            session_id=session_id,
+            defaults={
+                'user': user,
+                'self_introduction': self_introduction,
+                'recommendations': processed_recommendations,
+                'analysis_result': response_content
+            }
+        )
+        
+        if not created:
+            record.user = user
+            record.self_introduction = self_introduction
+            record.recommendations = processed_recommendations
+            record.analysis_result = response_content
+            record.save()
+        
+        # 将记录添加到LanceDB
+        add_to_lancedb(record)
+        
+        # 保存统一使用记录
+        try:
+            AIUsageRecord.objects.create(
+                user=user,
+                usage_type='recommendation',
+                related_id=session_id
+            )
+        except Exception as e:
+            logger.error(f"Error creating AIUsageRecord: {str(e)}")
+        db_end = time.time()
+        logger.info(f"Database operations took {db_end - db_start:.2f} seconds")
+        
+        # 计算总响应时间
+        total_time = time.time() - start_time
+        logger.info(f"Career recommendation completed in {total_time:.2f} seconds: session_id={session_id}, user={user.username if user else 'anonymous'}")
+        
+        return JsonResponse({
+            "success": True,
+            "recommendations": processed_recommendations,
+            "raw_analysis": response_content,
+            "session_id": session_id,
+            "response_time": total_time
+        })
+        
+    except Exception as e:
+        # 计算总响应时间
+        total_time = time.time() - start_time
+        logger.error(f"Error in career_recommendation in {total_time:.2f} seconds: {str(e)}")
+        return JsonResponse({
+            "success": False,
+            "error": str(e),
+            "response_time": total_time
+        }, status=500)
+
+
+@api_view(['POST'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([AllowAny])
+def career_plan_generation(request):
+    """生成个性化职业规划API接口"""
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Method not allowed'}, status=405)
+    
+    try:
+        data = json.loads(request.body)
+        self_introduction = data.get('self_introduction', '')
+        selected_careers = data.get('selected_careers', [])
+        
+        if not selected_careers:
+            return JsonResponse({'error': 'selected_careers is required'}, status=400)
+            
+        careers_str = "、".join(selected_careers)
+        
+        # 从数据库获取职业规划提示词，如果没有专门的plan提示词，先使用career
+        from ai_integration.langgraph.utils.prompt_manager import get_prompt
+        # 可以考虑在PromptManager中添加专门的 'plan_generation'
+        plan_prompt = get_prompt('career') 
+        
+        # 强制要求 JSON 格式输出
+        enhanced_prompt = f"""
+用户自我介绍：{self_introduction}
+用户选择的职业方向：{careers_str}
+
+你的任务是为用户生成一份个性化的职业生涯规划报告，必须且只能输出合法的 JSON 格式数据。不要输出任何其他文本、markdown 标记或解释。
+
+JSON 数据结构要求如下：
+{{
+  "careerPlan": [
+    {{
+      "title": "短期职业目标（1-2年）",
+      "description": "简要描述短期内的核心目标和发展定位...",
+      "details": ["具体行动项1", "具体行动项2", "具体行动项3"]
+    }},
+    {{
+      "title": "中期职业目标（3-5年）",
+      "description": "简要描述中期内的核心目标和发展定位...",
+      "details": ["具体行动项1", "具体行动项2", "具体行动项3"]
+    }},
+    {{
+      "title": "长期职业目标（5-10年）",
+      "description": "简要描述长期内的核心目标和发展定位...",
+      "details": ["具体行动项1", "具体行动项2", "具体行动项3"]
+    }}
+  ],
+  "radarData": [
+    {{"name": "专业技能", "value": 85}},
+    {{"name": "项目经验", "value": 75}},
+    {{"name": "团队协作", "value": 90}},
+    {{"name": "学习能力", "value": 95}},
+    {{"name": "沟通表达", "value": 80}},
+    {{"name": "问题解决", "value": 88}}
+  ],
+  "actionPlan": [
+    "具体行动计划步骤1",
+    "具体行动计划步骤2",
+    "具体行动计划步骤3"
+  ]
+}}
+
+请根据用户的背景和选择的职业，真实地分析并填充上述 JSON 结构中的各项内容。雷达图(radarData)的六个维度可以根据用户自我介绍智能评估打分（0-100）。
+"""
+        
+        # 创建工作流并执行 (复用 career 模式节点)
+        chat_workflow = create_chat_workflow()
+        state = {
+            "message": enhanced_prompt,
+            "mode": "career"
+        }
+        
+        logger.info("Invoking LangGraph workflow for career plan generation")
+        result = chat_workflow.invoke(state)
+        
+        response_content = result.get("response", "")
+        
+        # 清洗并解析 JSON
+        try:
+            # 尝试提取 JSON 块
+            json_match = regex.search(r'```json\s*([\s\S]*?)\s*```', response_content)
+            if json_match:
+                clean_content = json_match.group(1).strip()
+            else:
+                start_idx = response_content.find('{')
+                end_idx = response_content.rfind('}')
+                if start_idx != -1 and end_idx != -1:
+                    clean_content = response_content[start_idx:end_idx+1].strip()
+                else:
+                    clean_content = response_content.strip()
+            
+            clean_content = clean_content.replace('{{', '{').replace('}}', '}')
+            parsed_content = json.loads(clean_content, strict=False)
+            
+            return JsonResponse({
+                "success": True,
+                "data": parsed_content
+            })
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse generated career plan JSON: {str(e)}")
+            logger.error(f"Raw output: {response_content}")
+            return JsonResponse({
+                "success": False,
+                "error": "解析大模型生成的规划数据失败"
+            }, status=500)
+            
+    except Exception as e:
+        logger.error(f"Error in career_plan_generation: {str(e)}")
+        return JsonResponse({
+            "success": False,
+            "error": str(e)
+        }, status=500)
+
+@api_view(['POST'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([AllowAny])
+def save_career_recommendation(request):
+    """保存职业推荐记录的API接口"""
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Method not allowed'}, status=405)
+    
+    try:
+        data = json.loads(request.body)
+        
+        session_id = data.get('session_id', '')
+        self_introduction = data.get('self_introduction', '')
+        recommendations = data.get('recommendations', [])
+        
+        if not session_id:
+            return JsonResponse({'error': 'session_id is required'}, status=400)
+        
+        user = None
+        logger.info(f"Request user: {request.user}")
+        logger.info(f"Request auth: {request.auth}")
+        logger.info(f"Is authenticated: {request.user.is_authenticated}")
+        if request.user.is_authenticated:
+            user = request.user
+        
+        record, created = CareerRecommendationRecord.objects.get_or_create(
+            session_id=session_id,
+            defaults={
+                'user': user,
+                'self_introduction': self_introduction,
+                'recommendations': recommendations
+            }
+        )
+        
+        if not created:
+            record.user = user
+            record.self_introduction = self_introduction
+            record.recommendations = recommendations
+            record.save()
+        
+        # 将记录添加到LanceDB
+        add_to_lancedb(record)
+        
+        # 保存统一使用记录
+        try:
+            AIUsageRecord.objects.create(
+                user=user,
+                usage_type='recommendation',
+                related_id=session_id
+            )
+        except Exception as e:
+            logger.error(f"Error creating AIUsageRecord: {str(e)}")
+        
+        logger.info(f"Career recommendation saved: session_id={session_id}, user={user.username if user else 'anonymous'}")
+        
+        return JsonResponse({'success': True, 'record_id': record.id})
+    
+    except Exception as e:
+        logger.error(f"Error in save_career_recommendation: {str(e)}")
+        return JsonResponse({'error': str(e)}, status=500)
+
+@api_view(['POST'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([AllowAny])
+def save_career_plan(request):
+    """保存职业生涯规划报告的API接口"""
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Method not allowed'}, status=405)
+    
+    try:
+        data = json.loads(request.body)
+        
+        session_id = data.get('session_id', '')
+        report_content = data.get('report_content', '')
+        radar_data = data.get('radar_data', {})
+        
+        if not session_id:
+            return JsonResponse({'error': 'session_id is required'}, status=400)
+        
+        user = None
+        logger.info(f"Request user: {request.user}")
+        logger.info(f"Request auth: {request.auth}")
+        logger.info(f"Is authenticated: {request.user.is_authenticated}")
+        if request.user.is_authenticated:
+            user = request.user
+        
+        report, created = CareerPlanReport.objects.get_or_create(
+            session_id=session_id,
+            defaults={
+                'user': user,
+                'report_content': report_content,
+                'radar_data': radar_data
+            }
+        )
+        
+        if not created:
+            report.user = user
+            report.report_content = report_content
+            report.radar_data = radar_data
+            report.save()
+        
+        # 保存统一使用记录
+        try:
+            AIUsageRecord.objects.create(
+                user=user,
+                usage_type='plan',
+                related_id=session_id
+            )
+        except Exception as e:
+            logger.error(f"Error creating AIUsageRecord: {str(e)}")
+        
+        logger.info(f"Career plan report saved: session_id={session_id}, user={user.username if user else 'anonymous'}")
+        
+        return JsonResponse({'success': True, 'report_id': report.id})
+    
+    except Exception as e:
+        logger.error(f"Error in save_career_plan: {str(e)}")
+        return JsonResponse({'error': str(e)}, status=500)
+
+@api_view(['GET'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([AllowAny])
+def get_user_ai_records(request):
+    """获取用户的AI使用记录"""
+    if request.method != 'GET':
+        return JsonResponse({'error': 'Method not allowed'}, status=405)
+    
+    try:
+        if not request.user.is_authenticated:
+            return JsonResponse({'error': 'Authentication required'}, status=401)
+        
+        # 获取用户的所有AI使用记录
+        usage_records = AIUsageRecord.objects.filter(user=request.user).order_by('-created_at')
+        
+        # 构建响应数据
+        records = []
+        for record in usage_records:
+            records.append({
+                'id': record.id,
+                'usage_type': record.usage_type,
+                'related_id': record.related_id,
+                'created_at': record.created_at.isoformat(),
+                'tags': [tag.name for tag in record.tags.all()]
+            })
+        
+        return JsonResponse({'success': True, 'records': records})
+    
+    except Exception as e:
+        logger.error(f"Error in get_user_ai_records: {str(e)}")
+        return JsonResponse({'error': str(e)}, status=500)
+
+@api_view(['GET'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([AllowAny])
+def get_chat_records(request):
+    """获取用户的聊天记录"""
+    if request.method != 'GET':
+        return JsonResponse({'error': 'Method not allowed'}, status=405)
+    
+    try:
+        if not request.user.is_authenticated:
+            return JsonResponse({'error': 'Authentication required'}, status=401)
+        
+        # 获取用户的所有聊天会话
+        conversations = AIConversation.objects.filter(user=request.user).order_by('-created_at')
+        
+        # 构建响应数据
+        records = []
+        for conversation in conversations:
+            # 使用新的AIChatPair模型获取聊天记录
+            chat_pairs = AIChatPair.objects.filter(conversation=conversation).order_by('input_time')
+            
+            message_pairs = []
+            for pair in chat_pairs:
+                # 处理None值
+                output = pair.ai_output
+                user_input = pair.user_input
+                
+                # 检测工具调用失败的情况
+                if output and 'NoneNoneNoneNone' in output:
+                    # 重新生成时间回答
+                    current_time = get_time()
+                    output = f"当前时间是：{current_time}"
+                
+                message_pairs.append({
+                    'input': user_input,
+                    'input_time': pair.input_time.isoformat(),
+                    'output': output,
+                    'output_time': pair.output_time.isoformat() if pair.output_time else None
+                })
+            
+            records.append({
+                'id': conversation.id,
+                'session_id': conversation.session_id,
+                'mode': conversation.mode,
+                'created_at': conversation.created_at.isoformat(),
+                'username': request.user.username,
+                'message_pairs': message_pairs,
+                'tags': [tag.name for tag in conversation.tags.all()]
+            })
+        
+        return JsonResponse({'success': True, 'conversations': records})
+    
+    except Exception as e:
+        logger.error(f"Error in get_chat_records: {str(e)}")
+        return JsonResponse({'error': str(e)}, status=500)
+
+@api_view(['GET'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([AllowAny])
+def get_evaluation_records(request):
+    """获取用户的职业评测记录"""
+    if request.method != 'GET':
+        return JsonResponse({'error': 'Method not allowed'}, status=405)
+    
+    try:
+        if not request.user.is_authenticated:
+            return JsonResponse({'error': 'Authentication required'}, status=401)
+        
+        # 获取用户的所有职业评测记录
+        records = CareerEvaluationRecord.objects.filter(user=request.user).order_by('-created_at')
+        
+        # 构建响应数据
+        evaluation_records = []
+        for record in records:
+            evaluation_records.append({
+                'session_id': record.session_id,
+                'selected_careers': record.selected_careers,
+                'evaluation_result': record.evaluation_result,
+                'created_at': record.created_at.isoformat(),
+                'tags': [tag.name for tag in record.tags.all()]
+            })
+        
+        return JsonResponse({'success': True, 'records': evaluation_records})
+    
+    except Exception as e:
+        logger.error(f"Error in get_evaluation_records: {str(e)}")
+        return JsonResponse({'error': str(e)}, status=500)
+
+@api_view(['GET'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([AllowAny])
+def get_plan_reports(request):
+    """获取用户的职业生涯规划报告"""
+    if request.method != 'GET':
+        return JsonResponse({'error': 'Method not allowed'}, status=405)
+    
+    try:
+        if not request.user.is_authenticated:
+            return JsonResponse({'error': 'Authentication required'}, status=401)
+        
+        # 获取用户的所有职业生涯规划报告
+        reports = CareerPlanReport.objects.filter(user=request.user).order_by('-created_at')
+        
+        # 构建响应数据
+        plan_reports = []
+        for report in reports:
+            plan_reports.append({
+                'session_id': report.session_id,
+                'report_content': report.report_content,
+                'radar_data': report.radar_data,
+                'created_at': report.created_at.isoformat(),
+                'tags': [tag.name for tag in report.tags.all()]
+            })
+        
+        return JsonResponse({'success': True, 'reports': plan_reports})
+    
+    except Exception as e:
+        logger.error(f"Error in get_plan_reports: {str(e)}")
+        return JsonResponse({'error': str(e)}, status=500)
+
+@api_view(['POST'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([AllowAny])
+def add_tag_to_record(request):
+    """为AI使用记录添加标签"""
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Method not allowed'}, status=405)
+    
+    try:
+        data = json.loads(request.body)
+        
+        record_id = data.get('record_id')
+        record_type = data.get('record_type')  # 'chat', 'evaluation', 'plan'
+        tag_name = data.get('tag_name')
+        
+        if not record_id or not record_type or not tag_name:
+            return JsonResponse({'error': 'Missing required parameters'}, status=400)
+        
+        if not request.user.is_authenticated:
+            return JsonResponse({'error': 'Authentication required'}, status=401)
+        
+        # 获取或创建标签
+        tag, created = AITag.objects.get_or_create(name=tag_name)
+        
+        # 根据记录类型添加标签
+        if record_type == 'chat':
+            try:
+                conversation = AIConversation.objects.get(id=record_id, user=request.user)
+                conversation.tags.add(tag)
+            except AIConversation.DoesNotExist:
+                return JsonResponse({'error': 'Conversation not found'}, status=404)
+        elif record_type == 'evaluation':
+            try:
+                record = CareerEvaluationRecord.objects.get(id=record_id, user=request.user)
+                record.tags.add(tag)
+            except CareerEvaluationRecord.DoesNotExist:
+                return JsonResponse({'error': 'Evaluation record not found'}, status=404)
+        elif record_type == 'plan':
+            try:
+                report = CareerPlanReport.objects.get(id=record_id, user=request.user)
+                report.tags.add(tag)
+            except CareerPlanReport.DoesNotExist:
+                return JsonResponse({'error': 'Plan report not found'}, status=404)
+        else:
+            return JsonResponse({'error': 'Invalid record type'}, status=400)
+        
+        return JsonResponse({'success': True, 'tag_id': tag.id})
+    
+    except Exception as e:
+        logger.error(f"Error in add_tag_to_record: {str(e)}")
+        return JsonResponse({'error': str(e)}, status=500)
+
+@api_view(['POST'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([AllowAny])
+def delete_record(request):
+    """删除AI使用记录"""
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Method not allowed'}, status=405)
+    
+    try:
+        data = json.loads(request.body)
+        
+        record_id = data.get('record_id')
+        record_type = data.get('record_type')  # 'chat', 'evaluation', 'plan'
+        
+        if not record_id or not record_type:
+            return JsonResponse({'error': 'Missing required parameters'}, status=400)
+        
+        if not request.user.is_authenticated:
+            return JsonResponse({'error': 'Authentication required'}, status=401)
+        
+        # 根据记录类型删除
+        if record_type == 'chat':
+            try:
+                conversation = AIConversation.objects.get(id=record_id, user=request.user)
+                conversation.delete()
+            except AIConversation.DoesNotExist:
+                return JsonResponse({'error': 'Conversation not found'}, status=404)
+        elif record_type == 'evaluation':
+            try:
+                record = CareerEvaluationRecord.objects.get(id=record_id, user=request.user)
+                record.delete()
+            except CareerEvaluationRecord.DoesNotExist:
+                return JsonResponse({'error': 'Evaluation record not found'}, status=404)
+        elif record_type == 'plan':
+            try:
+                report = CareerPlanReport.objects.get(id=record_id, user=request.user)
+                report.delete()
+            except CareerPlanReport.DoesNotExist:
+                return JsonResponse({'error': 'Plan report not found'}, status=404)
+        else:
+            return JsonResponse({'error': 'Invalid record type'}, status=400)
+        
+        return JsonResponse({'success': True})
+    except Exception as e:
+        logger.error(f"Error in delete_record: {str(e)}")
+        return JsonResponse({'error': str(e)}, status=500)
+
+
+@api_view(['GET'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([AllowAny])
+def get_chat_history(request):
+    """获取对话历史（短期记忆）"""
+    if request.method != 'GET':
+        return JsonResponse({'error': 'Method not allowed'}, status=405)
+    
+    try:
+        session_id = request.query_params.get('session_id')
+        limit = request.query_params.get('limit', 10)
+        
+        if not session_id:
+            return JsonResponse({'error': 'session_id is required'}, status=400)
+        
+        # 获取对话
+        conversation = AIConversation.objects.filter(session_id=session_id).first()
+        if not conversation:
+            return JsonResponse({'error': 'Conversation not found'}, status=404)
+        
+        # 检查权限
+        if conversation.user and request.user.is_authenticated and conversation.user != request.user:
+            return JsonResponse({'error': 'Permission denied'}, status=403)
+        
+        # 获取对话历史
+        chat_pairs = AIChatPair.objects.filter(conversation=conversation).order_by('input_time')[:int(limit)]
+        
+        # 构建响应
+        chat_history = []
+        for pair in chat_pairs:
+            chat_history.append({
+                'id': pair.id,
+                'user_input': pair.user_input,
+                'ai_output': pair.ai_output,
+                'input_time': pair.input_time.isoformat(),
+                'output_time': pair.output_time.isoformat() if pair.output_time else None
+            })
+        
+        return JsonResponse({
+            'success': True,
+            'chat_history': chat_history,
+            'session_id': session_id,
+            'mode': conversation.mode
+        })
+    except Exception as e:
+        logger.error(f"Error in get_chat_history: {str(e)}")
+        return JsonResponse({'error': str(e)}, status=500)
+
+
+@api_view(['GET'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([AllowAny])
+def get_long_term_memory(request):
+    """获取长期记忆"""
+    if request.method != 'GET':
+        return JsonResponse({'error': 'Method not allowed'}, status=405)
+    
+    try:
+        categories = request.query_params.getlist('categories')
+        limit = request.query_params.get('limit', 10)
+        
+        # 获取长期记忆
+        user = request.user if request.user.is_authenticated else None
+        memories = memory_agent.get_long_term_memory(user=user, categories=categories, limit=int(limit))
+        
+        return JsonResponse({
+            'success': True,
+            'memories': memories
+        })
+    except Exception as e:
+        logger.error(f"Error in get_long_term_memory: {str(e)}")
+        return JsonResponse({'error': str(e)}, status=500)
+
+
+@api_view(['POST'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([AllowAny])
+def update_memory(request):
+    """更新长期记忆"""
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Method not allowed'}, status=405)
+    
+    try:
+        data = json.loads(request.body)
+        memory_id = data.get('memory_id')
+        new_value = data.get('value')
+        
+        if not memory_id or not new_value:
+            return JsonResponse({'error': 'memory_id and value are required'}, status=400)
+        
+        # 更新记忆
+        success = memory_agent.update_memory(memory_id, new_value)
+        
+        if success:
+            return JsonResponse({'success': True})
+        else:
+            return JsonResponse({'error': 'Failed to update memory'}, status=404)
+    except Exception as e:
+        logger.error(f"Error in update_memory: {str(e)}")
+        return JsonResponse({'error': str(e)}, status=500)
+
+
+@api_view(['POST'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([AllowAny])
+def delete_memory(request):
+    """删除长期记忆"""
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Method not allowed'}, status=405)
+    
+    try:
+        data = json.loads(request.body)
+        memory_id = data.get('memory_id')
+        
+        if not memory_id:
+            return JsonResponse({'error': 'memory_id is required'}, status=400)
+        
+        # 删除记忆
+        success = memory_agent.delete_memory(memory_id)
+        
+        if success:
+            return JsonResponse({'success': True})
+        else:
+            return JsonResponse({'error': 'Failed to delete memory'}, status=404)
+    except Exception as e:
+        logger.error(f"Error in delete_memory: {str(e)}")
+        return JsonResponse({'error': str(e)}, status=500)
+
+
+@api_view(['GET'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([AllowAny])
+def get_user_interview_reviews(request):
+    """
+    获取用户的面试复盘记录列表
+    
+    Returns:
+        包含复盘会话信息和最近问答内容的列表
+    """
+    if request.method != 'GET':
+        return JsonResponse({'error': 'Method not allowed'}, status=405)
+    
+    try:
+        user = request.user
+        if not user.is_authenticated:
+            return JsonResponse({"success": False, "error": "未登录"}, status=401)
+        
+        # 查询用户的复盘模式会话
+        review_conversations = AIConversation.objects.filter(
+            user=user, 
+            mode='review'
+        ).order_by('-created_at')[:10]
+        
+        result = []
+        for conv in review_conversations:
+            # 获取最近的问答对
+            latest_pair = conv.pairs.last()
+            result.append({
+                'id': conv.id,
+                'session_id': conv.session_id,
+                'created_at': conv.created_at.strftime('%Y-%m-%d %H:%M'),
+                'latest_content': latest_pair.ai_output[:150] + '...' if latest_pair else '无内容',
+                'pair_count': conv.pairs.count()
+            })
+        
+        return JsonResponse({
+            "success": True,
+            "data": result
+        })
+    except Exception as e:
+        logger.error(f"获取面试复盘失败: {str(e)}")
+        return JsonResponse({
+            "success": False,
+            "error": str(e)
+        }, status=500)

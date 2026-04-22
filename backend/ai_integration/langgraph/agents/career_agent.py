@@ -1,0 +1,34 @@
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.tools import Tool
+from ..tools.time_tool import get_time
+from ..utils.prompt_manager import get_prompt
+import os
+
+def create_career_agent():
+    llm = ChatOpenAI(
+        model="qwen-turbo-2025-07-15", 
+        temperature=0.7,
+        api_key=os.getenv('api_key'),
+        base_url=os.getenv('base_url')
+    )
+    
+    # 创建工具列表
+    tools = []
+    
+    # 绑定工具到LLM
+    llm_with_tools = llm.bind_tools(tools)
+    
+    # 从数据库获取提示词
+    system_prompt = get_prompt('career')
+    
+    # 创建提示模板
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        ("user", "{messages}")
+    ])
+    
+    # 创建代理链
+    agent_chain = prompt | llm_with_tools
+    
+    return agent_chain

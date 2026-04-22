@@ -1,0 +1,64 @@
+[project]
+name = "cs-career-guide"
+version = "1.0.0"
+description = "CS Career Guide backend API"
+authors = [
+    { name = "Your Name", email = "your.email@example.com" }
+]
+license = "MIT"                               # 改为 SPDX 字符串，弃用 { file = ... }
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: Django",
+    "Framework :: Django :: 4.2",
+    "Intended Audience :: Developers",
+    # "License :: OSI Approved :: MIT License",  # 已弃用，用上面的 license 字段代替
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
+]
+dependencies = [
+    "Django==4.2.7",
+    "djangorestframework==3.14.0",
+    "django-cors-headers==4.3.0",
+    "python-dotenv==1.0.0",
+    "requests==2.31.0",
+    "beautifulsoup4==4.12.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-django",
+    "black",
+    "flake8",
+    "isort",
+]
+full = [
+    "pytest",
+    "pytest-django",
+    "black",
+    "flake8",
+    "isort",
+]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+# 指定要打包的 Python 包（避免自动发现 frontend 等非代码目录）
+[tool.setuptools.packages.find]
+where = ["."]                     # 从项目根目录查找
+include = ["backend*"]            # 包含 backend 及其所有子包
+exclude = ["frontend*", "tests*"] # 排除 frontend 及其他不需要的目录
+
+[tool.black]
+line-length = 88
+target-version = ["py38"]
+
+[tool.isort]
+profile = "black"
