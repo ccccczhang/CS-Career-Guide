@@ -189,14 +189,14 @@
     </section>
     <!-- Section 3: Subjective Self-Description -->
     <section class="grid grid-cols-1 md:grid-cols-2 gap-8 bg-slate-100 rounded-xl">
-    <div class="space-y-6">
+    <div class="space-y-8">
     <div class="bg-surface-container-lowest p-8 rounded-xl shadow-sm">
     <label class="block text-sm font-bold text-on-primary-container mb-4 flex items-center gap-2">
-      其他技能
+      其他技能或项目经历
     </label>
-    <textarea class="w-full bg-surface-container-low border-none focus:ring-2 focus:ring-secondary/10 rounded-xl p-4 text-on-surface resize-none" placeholder="请描述您掌握的其他技能，如：Docker, AWS, 特定项目经验等..." rows="4" v-model="formData.otherSkills"></textarea>
+    <textarea class="w-full bg-surface-container-low border-none focus:ring-2 focus:ring-secondary/10 rounded-xl p-4 text-on-surface resize-none" placeholder="请描述您掌握的其他技能，如：Docker, AWS, 特定项目经验等..." rows="7" v-model="formData.otherSkills"></textarea>
     </div>
-    <div class="bg-surface-container-lowest p-8 rounded-xl shadow-sm">
+    <div class="bg-surface-container-lowest  pb-8 px-8 rounded-xl shadow-sm">
     <label class="block text-sm font-bold text-on-primary-container mb-4 flex items-center gap-2">
       目标职业
     </label>
@@ -273,7 +273,6 @@ const loadFormData = () => {
       }
     }
   } catch (error) {
-    console.error('加载自我介绍数据失败:', error)
   }
   // 返回默认值
   return {
@@ -320,15 +319,12 @@ function getCachedRecommendation(selfIntroductionText) {
       // 检查缓存是否过期（有效期24小时）
       const now = Date.now()
       if (parsed.expireTime && parsed.expireTime > now) {
-        console.log('[职业推荐缓存] 缓存命中')
         return parsed.data
       } else {
-        console.log('[职业推荐缓存] 缓存已过期，清除缓存')
         localStorage.removeItem(cacheKey)
       }
     }
   } catch (error) {
-    console.error('[职业推荐缓存] 获取缓存失败:', error)
   }
   return null
 }
@@ -346,9 +342,7 @@ function setCachedRecommendation(selfIntroductionText, data) {
     }
     
     localStorage.setItem(cacheKey, JSON.stringify(cacheData))
-    console.log('[职业推荐缓存] 缓存已保存')
   } catch (error) {
-    console.error('[职业推荐缓存] 保存缓存失败:', error)
   }
 }
 
@@ -363,35 +357,35 @@ async function nextToAssessment() {
     localStorage.setItem('selfIntroduction', JSON.stringify(formData.value))
     
     if (token) {
-      // 如果已登录，保存自我介绍到用户数据库
       const userData = {
         name: formData.value.name || '',
         gender: formData.value.gender || '',
         school: formData.value.school || '',
         major: formData.value.major || '',
-        grade: formData.value.grade || ''
+        grade: formData.value.grade || '',
+        skills: formData.value.skills.join(',') || '',
+        other_skills: formData.value.otherSkills || '',
+        self_introduction: formData.value.selfDescription || '',
+        career_goal: formData.value.goal || ''
       }
+      
       await userAPI.updateProfile(userData)
-      console.log('用户资料已同步到数据库:', userData)
     }
     
     // 构建用户自我介绍文本（包含专业和年级信息，供大模型识别）
     const selfIntroductionText = `姓名: ${formData.value.name || ''}\n学校: ${formData.value.school || ''}\n专业: ${formData.value.major || ''}\n年级: ${formData.value.grade || ''}\n性别: ${formData.value.gender || ''}\n技能: ${formData.value.skills.join('、') || '无'}\n其他技能: ${formData.value.otherSkills || '无'}\n条件自述: ${formData.value.selfDescription || '无'}\n职业期望: ${formData.value.goal || '无'}`
     
-    console.log('请求数据:', { self_introduction: selfIntroductionText.substring(0, 100) + '...' })
+
     
     // ========== 检查缓存 ==========
     const cachedData = getCachedRecommendation(selfIntroductionText)
     
     if (cachedData) {
       // 使用缓存结果（瞬间显示）
-      console.log('[职业推荐] 使用缓存结果，跳过API调用')
-      
       const recommendations = cachedData.recommendations
       
       // 存储推荐结果到localStorage
       localStorage.setItem('careerRecommendations', JSON.stringify(recommendations))
-      console.log('推荐结果已从缓存加载')
       
       // 存储原始分析
       if (cachedData.raw_analysis) {
@@ -410,22 +404,16 @@ async function nextToAssessment() {
     }
     
     // ========== 没有缓存，调用API ==========
-    console.log('[职业推荐] 未找到缓存，开始调用职业推荐API')
     
     try {
       // 使用aiAPI.careerRecommendation方法
       const responseData = await aiAPI.careerRecommendation(selfIntroductionText)
-      console.log('API响应数据:', responseData)
       
       if (!responseData.success) {
-        console.error('API调用失败:', responseData.error)
         error.value = `职业推荐失败: ${responseData.error}`
         loading.value = false
         return
       }
-      
-      console.log('API调用成功')
-      console.log('结果来源:', responseData.source)
       
       // 解析后端返回的推荐结果（支持新旧两种格式）
       let cards = []
@@ -435,9 +423,6 @@ async function nextToAssessment() {
       if (responseData.cards && Array.isArray(responseData.cards)) {
         cards = responseData.cards
         accordion = responseData.accordion || null
-        console.log('使用新格式：cards + accordion');
-        console.log('cards:', JSON.stringify(cards, null, 2));
-        console.log('accordion:', accordion ? '存在' : '不存在');
       } else if (responseData.recommendations && Array.isArray(responseData.recommendations)) {
         // 旧格式：兼容之前的 recommendations 数组（同时支持accordion字段）
         cards = responseData.recommendations.map(rec => ({
@@ -446,10 +431,7 @@ async function nextToAssessment() {
           reason: rec.reason
         }))
         accordion = responseData.accordion || null
-        console.log('使用旧格式：recommendations');
-        console.log('accordion:', accordion ? '存在' : '不存在');
       } else {
-        console.error('推荐结果格式错误')
         error.value = '推荐结果格式错误'
         loading.value = false
         return
@@ -457,7 +439,6 @@ async function nextToAssessment() {
       
       // 验证推荐结果格式
       if (!Array.isArray(cards) || cards.length === 0) {
-        console.error('推荐结果为空或格式错误')
         error.value = '推荐结果为空或格式错误'
         loading.value = false
         return
@@ -465,30 +446,24 @@ async function nextToAssessment() {
       
       // 存储卡片数据到localStorage（用于卡片展示）
       localStorage.setItem('careerRecommendations', JSON.stringify(cards))
-      console.log('卡片数据已存储到localStorage')
       
       // 存储手风琴数据到localStorage（用于详细分析展示）
       if (accordion) {
         localStorage.setItem('careerAnalysis', JSON.stringify(accordion))
-        console.log('手风琴数据已存储到localStorage')
       }
       
       // 存储大模型的原始响应到localStorage
       if (responseData.raw_analysis) {
         localStorage.setItem('careerRecommendationRaw', responseData.raw_analysis)
-        console.log('大模型原始响应已存储到localStorage')
       } else if (responseData.recommendations) {
         localStorage.setItem('careerRecommendationRaw', JSON.stringify(responseData.recommendations))
-        console.log('大模型推荐结果（备用）已存储到localStorage')
       } else {
-        console.log('没有获取到大模型原始响应')
         localStorage.setItem('careerRecommendationRaw', '')
       }
       
       // 存储会话ID到localStorage
       if (responseData.session_id) {
         localStorage.setItem('careerRecommendationSessionId', responseData.session_id)
-        console.log('会话ID已存储到localStorage:', responseData.session_id)
       }
       
       // ========== 保存到缓存 ==========
@@ -500,11 +475,7 @@ async function nextToAssessment() {
       }
       setCachedRecommendation(selfIntroductionText, cacheData)
       
-      // 后端会自动保存推荐记录到数据库和LanceDB
-      console.log('推荐记录已由后端自动保存到数据库和LanceDB')
-      
     } catch (apiError) {
-      console.error('调用职业推荐API失败:', apiError)
       error.value = `调用职业推荐API失败: ${apiError.message}`
       loading.value = false
       return
@@ -513,8 +484,6 @@ async function nextToAssessment() {
     // 跳转到测评页面
     router.push('/career-evaluation')
   } catch (err) {
-    console.error('保存自我介绍失败:', err)
-    // 如果保存失败，仍然跳转到测评页面
     router.push('/career-evaluation')
   } finally {
     loading.value = false

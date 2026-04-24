@@ -12,8 +12,9 @@ class CustomUserAdmin(UserAdmin):
         (None, {'fields': ('username', 'password')}),
         ('个人信息', {'fields': ('name', 'gender')}),
         ('教育信息', {'fields': ('school', 'major', 'grade')}),
+        ('职业信息', {'fields': ('skills', 'other_skills', 'self_introduction', 'career_goal')}),
         ('社交链接', {'fields': ('github',)}),
-        ('简介', {'fields': ('self_introduction',)}),
+        ('简介', {'fields': ('profile',)}),
         ('权限', {'fields': ('is_active', 'is_staff', 'is_superuser', 'groups', 'user_permissions')}),
         ('日期', {'fields': ('last_login', 'date_joined')}),
     )

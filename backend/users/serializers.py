@@ -22,7 +22,7 @@ class UserSerializer(serializers.ModelSerializer):
             'id', 'username', 'email', 'avatar',
             'name', 'gender',
             'school', 'major', 'grade', 'education',
-            'github', 'self_introduction', 'address',
+            'github', 'profile', 'address',
             'date_joined', 'last_login'
         ]
         read_only_fields = ['date_joined', 'last_login']
@@ -33,7 +33,8 @@ class UserProfileUpdateSerializer(serializers.ModelSerializer):
         fields = [
             'email', 'avatar', 'name', 'gender',
             'school', 'major', 'grade', 'education',
-            'github', 'self_introduction', 'address'
+            'github', 'profile', 'address',
+            'skills', 'other_skills', 'self_introduction', 'career_goal'
         ]
 
 class ChangePasswordSerializer(serializers.Serializer):

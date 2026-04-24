@@ -31,8 +31,8 @@
                 </button>
 
               </div>
-              <div v-if="user?.self_introduction" class="mt-3 text-on-primary-container font-medium">
-                {{ user.self_introduction }}
+              <div v-if="user?.profile" class="mt-3 text-on-primary-container font-medium">
+                {{ user.profile }}
               </div>
               <div class="mt-3 flex flex-wrap gap-4 text-sm text-outline">
                 <span class="flex items-center gap-1">学校: {{ user?.school || ' ' }}</span>
@@ -60,8 +60,8 @@
               <div v-if="selfIntroduction" class="text-gray-800 leading-relaxed whitespace-pre-line">
                 {{ selfIntroduction }}
               </div>
-              <div v-else-if="user?.self_introduction" class="text-gray-800 leading-relaxed whitespace-pre-line">
-                {{ user.self_introduction }}
+              <div v-else-if="user?.profile" class="text-gray-800 leading-relaxed whitespace-pre-line">
+                {{ user.profile }}
               </div>
               <div v-else class="text-gray-500">
                 暂无自我介绍内容，请在职业规划的自我介绍页面填写。
@@ -235,7 +235,7 @@
             
             <div>
               <label class="block text-gray-600 text-sm mb-2">简介</label>
-              <textarea v-model="editForm.self_introduction" rows="4" class="w-full px-4 py-2 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-secondary focus:border-secondary transition-all text-gray-900" placeholder="介绍一下你自己"></textarea>
+              <textarea v-model="editForm.profile" rows="4" class="w-full px-4 py-2 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-secondary focus:border-secondary transition-all text-gray-900" placeholder="介绍一下你自己"></textarea>
             </div>
             
             <div class="grid grid-cols-2 gap-4">
@@ -289,7 +289,7 @@ const uploadingAvatar = ref(false)
 const editForm = ref({
   username: '',
   email: '',
-  self_introduction: '',
+  profile: '',
   school: '',
   major: '',
   education: '',
@@ -311,7 +311,7 @@ onMounted(async () => {
     editForm.value = {
       username: user.value?.username || '',
       email: user.value?.email || '',
-      self_introduction: user.value?.self_introduction || '',
+      profile: user.value?.profile || '',
       school: user.value?.school || '',
       major: user.value?.major || '',
       education: user.value?.education || '',
