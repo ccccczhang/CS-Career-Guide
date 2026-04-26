@@ -701,7 +701,7 @@ const showReview = ref(false)
 const reviewContent = ref('')
 
 // 语音合成开关 - 设置为 false 即可关闭语音合成
-const ENABLE_TTS = false // true = 开启语音合成, false = 关闭语音合成
+const ENABLE_TTS = true // true = 开启语音合成, false = 关闭语音合成
 
 // 语音识别相关
 const isSpeaking = ref(false)

@@ -376,7 +376,7 @@ def llm_chat(request):
                     # TTS 已强制禁用 - 防止产生费用
                     # 如需启用，请将下面的 True 改为 False
                     # ==============================================
-                    TTS_FORCE_DISABLED = True
+                    TTS_FORCE_DISABLED = False
                     
                     if TTS_FORCE_DISABLED:
                         logger.info("TTS IS FORCE DISABLED - No audio will be generated")
