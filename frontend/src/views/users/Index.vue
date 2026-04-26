@@ -272,6 +272,81 @@
       </div>
     </main>
   </div>
+
+  <!-- 复盘详情弹窗 -->
+  <div v-if="showReviewModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+    <div class="bg-white rounded-xl max-w-2xl w-full max-h-[80vh] overflow-hidden shadow-2xl">
+      <div class="flex justify-between items-center p-6 border-b">
+        <h3 class="text-lg font-semibold text-gray-800">面试复盘详情</h3>
+        <button @click="closeReviewModal" class="text-gray-500 hover:text-gray-700 text-2xl">&times;</button>
+      </div>
+      <div class="p-6 overflow-y-auto max-h-[calc(80vh-80px)]">
+        <div v-if="loadingReviewDetail" class="text-center py-8">
+          <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mx-auto"></div>
+          <p class="mt-2 text-gray-500">加载中...</p>
+        </div>
+        <div v-else-if="currentReview" class="space-y-4">
+          <!-- 基本信息 -->
+          <div class="grid grid-cols-2 gap-4">
+            <div class="bg-gray-50 p-3 rounded-lg">
+              <p class="text-sm text-gray-500">面试风格</p>
+              <p class="font-medium text-gray-800">{{ currentReview.interview_style }}</p>
+            </div>
+            <div class="bg-gray-50 p-3 rounded-lg">
+              <p class="text-sm text-gray-500">综合评分</p>
+              <p class="font-medium text-gray-800">{{ currentReview.overall_score }} 分</p>
+            </div>
+            <div class="bg-gray-50 p-3 rounded-lg">
+              <p class="text-sm text-gray-500">面试时长</p>
+              <p class="font-medium text-gray-800">{{ currentReview.interview_duration }} 分钟</p>
+            </div>
+            <div class="bg-gray-50 p-3 rounded-lg">
+              <p class="text-sm text-gray-500">问答数量</p>
+              <p class="font-medium text-gray-800">{{ currentReview.question_count }} 问 / {{ currentReview.answer_count }} 答</p>
+            </div>
+          </div>
+
+          <!-- 复盘内容 -->
+          <div class="mt-6">
+            <h4 class="text-sm font-semibold text-gray-700 mb-2">复盘内容</h4>
+            <div class="bg-gray-50 p-4 rounded-lg whitespace-pre-wrap text-gray-800">
+              {{ currentReview.review_content }}
+            </div>
+          </div>
+
+          <!-- 优点 -->
+          <div v-if="currentReview.strengths" class="mt-4">
+            <h4 class="text-sm font-semibold text-gray-700 mb-2">优点</h4>
+            <div class="bg-green-50 p-4 rounded-lg">
+              <ul class="list-disc list-inside text-gray-700">
+                <li v-for="(item, index) in currentReview.strengths.split('\n').filter(s => s.trim())" :key="index">{{ item }}</li>
+              </ul>
+            </div>
+          </div>
+
+          <!-- 待改进 -->
+          <div v-if="currentReview.weaknesses" class="mt-4">
+            <h4 class="text-sm font-semibold text-gray-700 mb-2">待改进</h4>
+            <div class="bg-yellow-50 p-4 rounded-lg">
+              <ul class="list-disc list-inside text-gray-700">
+                <li v-for="(item, index) in currentReview.weaknesses.split('\n').filter(s => s.trim())" :key="index">{{ item }}</li>
+              </ul>
+            </div>
+          </div>
+
+          <!-- 建议 -->
+          <div v-if="currentReview.suggestions" class="mt-4">
+            <h4 class="text-sm font-semibold text-gray-700 mb-2">改进建议</h4>
+            <div class="bg-blue-50 p-4 rounded-lg">
+              <ul class="list-disc list-inside text-gray-700">
+                <li v-for="(item, index) in currentReview.suggestions.split('\n').filter(s => s.trim())" :key="index">{{ item }}</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 </template>
 
 <script setup>
@@ -302,6 +377,9 @@ const selfIntroduction = ref('')
 const resume = ref(null)
 const interviewReviews = ref([])
 const loadingReviews = ref(false)
+const showReviewModal = ref(false)
+const currentReview = ref(null)
+const loadingReviewDetail = ref(false)
 
 onMounted(async () => {
   try {
@@ -489,8 +567,25 @@ const goToInterview = () => {
   router.push('/interview')
 }
 
-const viewReviewDetail = (sessionId) => {
+const viewReviewDetail = async (sessionId) => {
   console.log('View review detail:', sessionId)
+  loadingReviewDetail.value = true
+  try {
+    const response = await api.get(`/ai/records/interview-reviews/${sessionId}/`)
+    if (response.success) {
+      currentReview.value = response.data
+      showReviewModal.value = true
+    }
+  } catch (error) {
+    console.error('Failed to load review detail:', error)
+  } finally {
+    loadingReviewDetail.value = false
+  }
+}
+
+const closeReviewModal = () => {
+  showReviewModal.value = false
+  currentReview.value = null
 }
 
 

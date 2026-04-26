@@ -545,22 +545,7 @@
               >
                 <span class="text-2xl font-extrabold text-outline/30 group-hover:text-secondary transition-colors italic">{{ (currentPage - 1) * pageSize + index + 1 }}</span>
                 <div class="flex-1">
-                  <h4 class="font-bold text-on-surface group-hover:text-secondary transition-colors">{{ fair.university === 'csu' ? '中南大学' : 
-                    fair.university === 'hnu' ? '湖南大学' : 
-                    fair.university === 'hunnu_science' ? '湖南师范大学' : 
-                    fair.university === 'csust' ? '长沙理工大学' : 
-                    fair.university === 'hunnu' ? '湖南农业大学' : 
-                    fair.university === 'csuft' ? '中南林业科技大学' : 
-                    fair.university === 'hnu_medicine' ? '湖南中医药大学' : 
-                    fair.university === 'xtu' ? '湘潭大学' : 
-                    fair.university === 'hnust' ? '湖南科技大学' : 
-                    fair.university === 'usc' ? '南华大学' : 
-                    fair.university === 'hutb' ? '湖南工商大学' : 
-                    fair.university === 'hnctu' ? '湖南工业大学' : 
-                    fair.university === 'jsu' ? '吉首大学' : 
-                    fair.university === 'hhtc' ? '怀化学院' : 
-                    fair.university === 'hnfnu' ? '湖南第一师范学院' : 
-                    fair.university }}</h4>
+                  <h4 class="font-bold text-on-surface group-hover:text-secondary transition-colors">{{ getUniversityName(fair.university) }}</h4>
                   <a 
                     :href="fair.university_url" 
                     target="_blank" 
@@ -599,45 +584,43 @@
               地区招聘资讯
               <span class="material-symbols-outlined text-secondary" style="font-variation-settings: 'FILL' 1;">location</span>
             </h3>
-            <div class="space-y-6">
-              <!-- News Card 1 -->
-              <div class="p-4 bg-surface-container-lowest rounded-2xl border border-outline/10 hover:border-secondary transition-all cursor-pointer group">
-                <div class="flex justify-between items-start mb-2">
-                  <span class="px-2 py-0.5 bg-secondary/10 text-secondary text-[10px] font-bold rounded">双选会</span>
-                  <span class="text-[10px] text-outline font-medium">3月25日</span>
-                </div>
-                <h4 class="font-bold text-on-surface mb-2 group-hover:text-secondary transition-colors">2024春季计算机专场双选会</h4>
-                <div class="flex items-center gap-2 text-xs text-on-primary-container">
-                  <span class="material-symbols-outlined text-sm">apartment</span>
-                  <span>清华大学 - 综合体育馆</span>
-                </div>
+            
+            <div v-if="locationStatus === 'loading'" class="flex items-center justify-center py-8">
+              <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-secondary"></div>
+            </div>
+            
+            <div v-else-if="locationStatus === 'denied'" class="text-center py-8">
+              <div class="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mx-auto mb-4">
+                <span class="material-symbols-outlined text-3xl text-red-400">location_disabled</span>
               </div>
-              <!-- News Card 2 -->
-              <div class="p-4 bg-surface-container-lowest rounded-2xl border border-outline/10 hover:border-secondary transition-all cursor-pointer group">
+              <p class="text-on-surface-variant text-sm">用户未授权位置权限</p>
+            </div>
+            
+            <div v-else-if="locationStatus === 'success' && locationJobs.length === 0" class="text-center py-8">
+              <p class="text-on-surface-variant text-sm">{{ currentCity }}暂无相关职位</p>
+            </div>
+            
+            <div v-else-if="locationStatus === 'success'" class="space-y-4">
+              <div 
+                v-for="job in locationJobs.slice(0, 3)" 
+                :key="job.id"
+                class="p-4 bg-surface-container-lowest rounded-2xl border border-outline/10 hover:border-secondary transition-all cursor-pointer group"
+              >
                 <div class="flex justify-between items-start mb-2">
-                  <span class="px-2 py-0.5 bg-amber-500/10 text-amber-600 text-[10px] font-bold rounded">宣讲会</span>
-                  <span class="text-[10px] text-outline font-medium">3月22日 19:00</span>
+                  <span class="px-2 py-0.5 bg-secondary/10 text-secondary text-[10px] font-bold rounded">职位</span>
+                  <span v-if="job.salary_range" class="text-[10px] text-secondary font-medium">{{ job.salary_range }}</span>
                 </div>
-                <h4 class="font-bold text-on-surface mb-2 group-hover:text-secondary transition-colors">米哈游 2024 春招宣讲会</h4>
+                <h4 class="font-bold text-on-surface mb-2 group-hover:text-secondary transition-colors">{{ job.position_name }}</h4>
                 <div class="flex items-center gap-2 text-xs text-on-primary-container">
-                  <span class="material-symbols-outlined text-sm">school</span>
-                  <span>上海交通大学 - 闵行校区</span>
+                  <span class="material-symbols-outlined text-sm">business</span>
+                  <span>{{ job.company_name }}</span>
                 </div>
-              </div>
-              <!-- News Card 3 -->
-              <div class="p-4 bg-surface-container-lowest rounded-2xl border border-outline/10 hover:border-secondary transition-all cursor-pointer group">
-                <div class="flex justify-between items-start mb-2">
-                  <span class="px-2 py-0.5 bg-indigo-500/10 text-indigo-600 text-[10px] font-bold rounded">职场沙龙</span>
-                  <span class="text-[10px] text-outline font-medium">3月28日</span>
-                </div>
-                <h4 class="font-bold text-on-surface mb-2 group-hover:text-secondary transition-colors">大厂面试官一对一辅导</h4>
-                <div class="flex items-center gap-2 text-xs text-on-primary-container">
-                  <span class="material-symbols-outlined text-sm">video_chat</span>
-                  <span>线上直播间 / 腾讯会议</span>
+                <div class="flex items-center gap-2 text-xs text-on-primary-container mt-1">
+                  <span class="material-symbols-outlined text-sm">location_on</span>
+                  <span>{{ job.address }}</span>
                 </div>
               </div>
             </div>
-            <button class="w-full mt-6 py-3 border border-outline/10 text-outline text-xs font-bold rounded-xl hover:bg-surface-container-lowest transition-all">查看全部资讯</button>
           </div>
 
           <!-- Career Tip Card -->
@@ -672,6 +655,332 @@ const loading = ref(false)
 const currentPage = ref(1)
 const pageSize = ref(8)
 const totalCount = ref(0)
+
+// 高校名称映射
+const universityNameMap = {
+  'csu': '中南大学',
+  'hnu': '湖南大学',
+  'hunnu_science': '湖南师范大学',
+  'csust': '长沙理工大学',
+  'hunnu': '湖南农业大学',
+  'csuft': '中南林业科技大学',
+  'hnu_medicine': '湖南医药学院',
+  'xtu': '湘潭大学',
+  'hnust': '湖南科技大学',
+  'usc': '南华大学',
+  'hutb': '湖南工商大学',
+  'hnctu': '湖南工业大学',
+  'jsu': '吉首大学',
+  'hhtc': '怀化学院',
+  'hnfnu': '湖南第一师范学院',
+  'hufe': '湖南财政经济学院',
+  'hnxxy': '湖南信息学院',
+  'hnyxy': '湖南应用技术学院',
+  'hnist': '湖南理工学院',
+  'hynu': '衡阳师范学院',
+  'huas': '湖南文理学院',
+  'hnjcxy': '湖南警察学院',
+  'hngxy': '湖南工学院',
+  'syxy': '邵阳学院',
+  'xnu': '湘南学院',
+  'hnrwkjxy': '湖南人文科技学院',
+  'hnjtgcxy': '湖南交通工程学院',
+  'hnrjzy': '湖南软件职业技术大学',
+  'other': '其他高校'
+}
+
+// 获取高校名称
+const getUniversityName = (universityCode) => {
+  return universityNameMap[universityCode] || universityCode
+}
+
+// 地区招聘资讯
+const locationStatus = ref('loading')
+const currentCity = ref('')
+const locationJobs = ref([])
+
+const getCityFromIP = async () => {
+  try {
+    console.log('[Geolocation Debug] 使用 IP 地址获取城市（仅精确到市）')
+    const response = await fetch('http://ip-api.com/json/?lang=zh-CN&fields=status,city,regionName')
+    const data = await response.json()
+    console.log('[Geolocation Debug] IP 地理定位响应:', data)
+    
+    if (data.status === 'success') {
+      // 只使用 city 字段，确保只精确到市级别
+      if (data.city && data.city.trim()) {
+        console.log(`[Geolocation Debug] IP定位城市: ${data.city}`)
+        return data.city
+      }
+      // 如果没有 city，使用 regionName（省级）作为备选
+      if (data.regionName && data.regionName.trim()) {
+        console.log(`[Geolocation Debug] IP定位地区: ${data.regionName}`)
+        return data.regionName
+      }
+    }
+    console.log('[Geolocation Debug] IP定位失败，使用默认城市: 北京')
+    return '北京'
+  } catch (error) {
+    console.error('[Geolocation Debug] IP 地理定位失败:', error)
+    return '北京'
+  }
+}
+
+const getLocationAndLoadJobs = async () => {
+  console.log('[Geolocation Debug] 开始获取位置信息（使用免费 IP 定位）')
+  
+  try {
+    // 直接使用 IP 定位（免费服务）
+    const city = await getCityFromIP()
+    currentCity.value = city
+    console.log(`[Geolocation Debug] IP定位获取城市: ${city}`)
+    await loadJobsByCity(city)
+    
+  } catch (error) {
+    console.error('[Geolocation Debug] IP定位失败:', error)
+    // 使用默认城市
+    currentCity.value = '长沙'
+    await loadJobsByCity('长沙')
+  }
+}
+
+// 地区层级映射表（区 -> 市 -> 省）
+const regionHierarchy = {
+  // 长沙地区
+  '天心区': { city: '长沙市', province: '湖南省' },
+  '岳麓区': { city: '长沙市', province: '湖南省' },
+  '芙蓉区': { city: '长沙市', province: '湖南省' },
+  '开福区': { city: '长沙市', province: '湖南省' },
+  '雨花区': { city: '长沙市', province: '湖南省' },
+  '望城区': { city: '长沙市', province: '湖南省' },
+  '长沙县': { city: '长沙市', province: '湖南省' },
+  '宁乡市': { city: '长沙市', province: '湖南省' },
+  '浏阳市': { city: '长沙市', province: '湖南省' },
+  
+  // 益阳地区
+  '赫山区': { city: '益阳市', province: '湖南省' },
+  '赫山': { city: '益阳市', province: '湖南省' },
+  '资阳区': { city: '益阳市', province: '湖南省' },
+  '沅江市': { city: '益阳市', province: '湖南省' },
+  
+  // 北京
+  '北京': { city: '北京市', province: '北京市' },
+  '东城区': { city: '北京市', province: '北京市' },
+  '西城区': { city: '北京市', province: '北京市' },
+  '朝阳区': { city: '北京市', province: '北京市' },
+  '海淀区': { city: '北京市', province: '北京市' },
+  
+  // 上海
+  '上海': { city: '上海市', province: '上海市' },
+  '黄浦区': { city: '上海市', province: '上海市' },
+  '徐汇区': { city: '上海市', province: '上海市' },
+  '浦东新区': { city: '上海市', province: '上海市' },
+  
+  // 广州
+  '广州': { city: '广州市', province: '广东省' },
+  '天河区': { city: '广州市', province: '广东省' },
+  '越秀区': { city: '广州市', province: '广东省' },
+  '海珠区': { city: '广州市', province: '广东省' },
+  
+  // 深圳
+  '深圳': { city: '深圳市', province: '广东省' },
+  '南山区': { city: '深圳市', province: '广东省' },
+  '福田区': { city: '深圳市', province: '广东省' },
+  '宝安区': { city: '深圳市', province: '广东省' },
+  
+  // 杭州
+  '杭州': { city: '杭州市', province: '浙江省' },
+  '西湖区': { city: '杭州市', province: '浙江省' },
+  '滨江区': { city: '杭州市', province: '浙江省' },
+  
+  // 成都
+  '成都': { city: '成都市', province: '四川省' },
+  '锦江区': { city: '成都市', province: '四川省' },
+  '高新区': { city: '成都市', province: '四川省' },
+  
+  // 武汉
+  '武汉': { city: '武汉市', province: '湖北省' },
+  '武昌区': { city: '武汉市', province: '湖北省' },
+  '洪山区': { city: '武汉市', province: '湖北省' },
+  
+  // 湖南省其他城市
+  '益阳市': { city: '益阳市', province: '湖南省' },
+  '岳阳市': { city: '岳阳市', province: '湖南省' },
+  '株洲市': { city: '株洲市', province: '湖南省' },
+  '湘潭市': { city: '湘潭市', province: '湖南省' },
+  '衡阳市': { city: '衡阳市', province: '湖南省' },
+  '常德市': { city: '常德市', province: '湖南省' },
+  '郴州市': { city: '郴州市', province: '湖南省' },
+  '永州市': { city: '永州市', province: '湖南省' },
+  '邵阳市': { city: '邵阳市', province: '湖南省' },
+  '娄底市': { city: '娄底市', province: '湖南省' },
+  '怀化市': { city: '怀化市', province: '湖南省' },
+  '张家界市': { city: '张家界市', province: '湖南省' },
+  
+  // 城市直接映射
+  '长沙市': { city: '长沙市', province: '湖南省' },
+  '北京市': { city: '北京市', province: '北京市' },
+  '上海市': { city: '上海市', province: '上海市' },
+  '广州市': { city: '广州市', province: '广东省' },
+  '深圳市': { city: '深圳市', province: '广东省' },
+  '杭州市': { city: '杭州市', province: '浙江省' },
+  '成都市': { city: '成都市', province: '四川省' },
+  '武汉市': { city: '武汉市', province: '湖北省' },
+  
+  // 省级直接映射
+  '湖南省': { city: '湖南省', province: '湖南省' },
+  '广东省': { city: '广东省', province: '广东省' },
+  '浙江省': { city: '浙江省', province: '浙江省' },
+  '四川省': { city: '四川省', province: '四川省' },
+  '湖北省': { city: '湖北省', province: '湖北省' },
+  '北京市': { city: '北京市', province: '北京市' },
+  '上海市': { city: '上海市', province: '上海市' },
+  '湖南': { city: '湖南省', province: '湖南省' },
+  '广东': { city: '广东省', province: '广东省' },
+  '浙江': { city: '浙江省', province: '浙江省' },
+  '四川': { city: '四川省', province: '四川省' },
+  '湖北': { city: '湖北省', province: '湖北省' }
+}
+
+// 获取地区层级信息
+const getRegionHierarchy = (location) => {
+  if (!location) return { district: null, city: null, province: null }
+  
+  // 如果在映射表中找到
+  if (regionHierarchy[location]) {
+    return {
+      district: location,
+      ...regionHierarchy[location]
+    }
+  }
+  
+  // 尝试去除后缀后查找
+  const suffixes = ['区', '县', '市', '市辖区', '自治县', '旗']
+  for (const suffix of suffixes) {
+    if (location.endsWith(suffix)) {
+      const baseName = location.slice(0, -suffix.length)
+      if (regionHierarchy[baseName]) {
+        return {
+          district: location,
+          ...regionHierarchy[baseName]
+        }
+      }
+    }
+  }
+  
+  // 默认返回
+  return {
+    district: location,
+    city: location,
+    province: location
+  }
+}
+
+// 逐级查询职位：区 -> 市 -> 省
+const loadJobsByCity = async (location) => {
+  try {
+    console.log(`[Geolocation Debug] 开始逐级查询职位，起点: ${location}`)
+    
+    // 获取地区层级
+    const hierarchy = getRegionHierarchy(location)
+    console.log(`[Geolocation Debug] 地区层级:`, hierarchy)
+    
+    // 查询顺序：区 → 市 → 省
+    const searchLevels = []
+    
+    if (hierarchy.district && hierarchy.district !== hierarchy.city) {
+      searchLevels.push({ level: 'district', value: hierarchy.district, label: `${hierarchy.district}(区/县)` })
+    }
+    if (hierarchy.city) {
+      searchLevels.push({ level: 'city', value: hierarchy.city, label: `${hierarchy.city}(市)` })
+    }
+    if (hierarchy.province && hierarchy.province !== hierarchy.city) {
+      searchLevels.push({ level: 'province', value: hierarchy.province, label: `${hierarchy.province}(省)` })
+    }
+    
+    console.log(`[Geolocation Debug] 查询层级顺序:`, searchLevels.map(s => s.label))
+    
+    // 逐级查询
+    for (const level of searchLevels) {
+      console.log(`[Geolocation Debug] 正在查询 ${level.label}: ${level.value}`)
+      
+      // 使用后端API的address参数进行查询
+      const apiUrl = `/api/career-evaluation/computer-careers/?address=${encodeURIComponent(level.value)}`
+      console.log(`[Geolocation Debug] API地址: ${apiUrl}`)
+      
+      try {
+        const searchResponse = await fetch(apiUrl, {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(localStorage.getItem('token') ? { 'Authorization': `Token ${localStorage.getItem('token')}` } : {})
+          }
+        })
+        
+        console.log(`[Geolocation Debug] HTTP状态码: ${searchResponse.status}`)
+        
+        if (!searchResponse.ok) {
+          console.error(`[Geolocation Debug] HTTP错误: ${searchResponse.status} - ${searchResponse.statusText}`)
+          continue
+        }
+        
+        const searchData = await searchResponse.json()
+        console.log(`[Geolocation Debug] ${level.label}查询结果:`, searchData)
+        
+        if (searchData.results && searchData.results.length > 0) {
+          locationJobs.value = searchData.results
+          currentCity.value = level.value
+          console.log(`[Geolocation Debug] ✅ 在 ${level.label} 级别找到 ${locationJobs.value.length} 个职位`)
+          locationStatus.value = 'success'
+          return
+        }
+        
+      } catch (fetchError) {
+        console.error(`[Geolocation Debug] ${level.label}查询失败:`, fetchError)
+      }
+      
+      console.log(`[Geolocation Debug] ❌ ${level.label} 级别没有找到职位，继续上一级`)
+    }
+    
+    // 如果所有级别都没有结果，尝试直接查询所有数据并在前端筛选
+    console.log('[Geolocation Debug] 尝试获取所有职位数据进行前端筛选')
+    try {
+      const allJobsResponse = await computerCareerAPI.getComputerCareers(1, 100)
+      console.log('[Geolocation Debug] 获取所有职位总数:', allJobsResponse.results?.length || 0)
+      
+      if (allJobsResponse.results && allJobsResponse.results.length > 0) {
+        // 在前端进行模糊匹配
+        for (const level of searchLevels) {
+          const matched = allJobsResponse.results.filter(job => 
+            job.address && (job.address.includes(level.value) || level.value.includes(job.address))
+          )
+          console.log(`[Geolocation Debug] 前端筛选 ${level.label} (${level.value}): ${matched.length} 条`)
+          
+          if (matched.length > 0) {
+            locationJobs.value = matched
+            currentCity.value = level.value
+            console.log(`[Geolocation Debug] ✅ 前端筛选在 ${level.label} 级别找到 ${matched.length} 个职位`)
+            locationStatus.value = 'success'
+            return
+          }
+        }
+      }
+    } catch (error) {
+      console.error('[Geolocation Debug] 获取所有职位失败:', error)
+    }
+    
+    // 如果所有级别都没有结果
+    console.log('[Geolocation Debug] ❌ 所有级别都没有找到职位')
+    locationJobs.value = []
+    currentCity.value = location
+    locationStatus.value = 'success'
+    
+  } catch (error) {
+    console.error('[Geolocation Debug] 职位查询失败:', error)
+    locationJobs.value = []
+    locationStatus.value = 'success'
+  }
+}
 
 // 职位数据
 const jobs = ref([])
@@ -962,8 +1271,10 @@ onMounted(async () => {
     await Promise.all([
       fetchJobFairs(),
       fetchJobs(),
-      loadAdviceData()
+      loadAdviceData(),
+      getLocationAndLoadJobs()
     ])
+    
     console.log('所有数据加载完成')
   } catch (error) {
     console.error('数据加载失败:', error)

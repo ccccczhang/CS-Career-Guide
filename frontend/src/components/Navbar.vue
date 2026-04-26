@@ -12,10 +12,7 @@
       </div>
     </div>
     <div class="flex items-center gap-4">
-      <div class="relative hidden lg:block">
-        <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-lg">search</span>
-        <input class="bg-slate-100 border-none rounded-2xl pl-20 pr-4 py-2 text-sm focus:ring-2 focus:ring-indigo-500/50 w-64 transition-all" placeholder="搜索资源..." type="text"/>
-      </div>
+
       <div class="flex gap-2 ml-2">
         <template v-if="!isLoggedIn">
           <router-link to="/login" class="px-5 py-2 text-sm font-bold text-slate-700 hover:bg-slate-100 rounded-xl transition-all">登录</router-link>

@@ -175,6 +175,7 @@ class AIPrompt(models.Model):
     PROMPT_TYPES = [
         ('chat', '闲聊模式'),
         ('interview', '面试模式'),
+        ('review', '面试复盘模式'),
         ('career', '职业规划模式'),
         ('recommendation', '职业推荐模式'),
         ('resume', '简历模式'),
@@ -225,3 +226,46 @@ class SeniorAdvice(models.Model):
     
     def __str__(self):
         return f"{self.company} - {self.position} - {self.senior_name}"
+
+
+class InterviewReviewRecord(models.Model):
+    """面试复盘记录"""
+    # 关联用户和会话
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=True, blank=True, verbose_name='用户')
+    conversation = models.ForeignKey(AIConversation, on_delete=models.CASCADE, related_name='review_records', verbose_name='关联会话')
+    
+    # 面试信息
+    interview_style = models.CharField(max_length=50, choices=[
+        ('gentle', '温和面'),
+        ('technical', '技术面'),
+        ('pressure', '压力面'),
+        ('behavioral', '行为面')
+    ], verbose_name='面试风格')
+    interview_duration = models.IntegerField(null=True, blank=True, verbose_name='面试时长(分钟)')
+    
+    # 复盘内容
+    review_content = models.TextField(verbose_name='复盘报告内容')
+    strengths = models.TextField(null=True, blank=True, verbose_name='优点总结')
+    weaknesses = models.TextField(null=True, blank=True, verbose_name='待改进点')
+    suggestions = models.TextField(null=True, blank=True, verbose_name='改进建议')
+    
+    # 评分
+    overall_score = models.FloatField(null=True, blank=True, verbose_name='综合评分')
+    communication_score = models.FloatField(null=True, blank=True, verbose_name='沟通表达评分')
+    technical_score = models.FloatField(null=True, blank=True, verbose_name='技术能力评分')
+    
+    # 统计信息
+    question_count = models.IntegerField(default=0, verbose_name='问题数量')
+    answer_count = models.IntegerField(default=0, verbose_name='回答数量')
+    
+    # 元数据
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+    
+    class Meta:
+        verbose_name = '面试复盘记录'
+        verbose_name_plural = '面试复盘记录'
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        return f"复盘记录 - {self.conversation.session_id}"

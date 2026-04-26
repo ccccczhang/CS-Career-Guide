@@ -1,4 +1,4 @@
-﻿from django.urls import path
+from django.urls import path
 from django.views.generic import TemplateView
 
 from . import career_report_views
@@ -32,5 +32,7 @@ urlpatterns = [
     path('senior-advice/approve/<int:advice_id>/', optimized_views.approve_senior_advice, name='approve_senior_advice'),
     path('voice-to-resume/', optimized_views.voice_to_resume, name='voice_to_resume'),
     path('records/interview-reviews/', langgraph_views.get_user_interview_reviews, name='get_user_interview_reviews'),
+    path('records/interview-reviews/<str:session_id>/', langgraph_views.get_interview_review_detail, name='get_interview_review_detail'),
+    path('interview/save_review/', langgraph_views.save_interview_review, name='save_interview_review'),
     path('career-report/', career_report_views.career_report_generation, name='career_report_generation'),
 ]

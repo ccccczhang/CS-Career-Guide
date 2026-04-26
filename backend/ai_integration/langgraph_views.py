@@ -13,8 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from django.http import StreamingHttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.core.cache import cache
-from company_reviews.models import CompanyInfo
-from ai_integration.models import AIConversation, AITag, CareerEvaluationRecord, CareerPlanReport, AIUsageRecord, CareerRecommendationRecord, AIChatPair
+from ai_integration.models import AIConversation, AITag, CareerEvaluationRecord, CareerPlanReport, AIUsageRecord, CareerRecommendationRecord, AIChatPair, InterviewReviewRecord
 from django.contrib.auth import get_user_model
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.authentication import TokenAuthentication
@@ -28,6 +27,7 @@ import websockets
 from ai_integration.langgraph.graphs.graph import create_chat_workflow
 from ai_integration.langgraph.tools.time_tool import get_time
 from ai_integration.langgraph.agents.memory_agent import memory_agent
+from ai_integration.langgraph.utils.prompt_manager import get_prompt
 
 # A-RAG integration
 from ai_integration.arag_integration import get_career_search, ARAGCareerSearch
@@ -177,170 +177,82 @@ User = get_user_model()
 
 # LangGraph workflow will be created per request
 
-def extract_search_params(message):
-    """从用户消息中提取搜索参数"""
-    # 检查是否是时间相关问题
-    time_keywords = ['时间', '几点', '几号', '今天', '现在']
-    is_time_question = any(keyword in message for keyword in time_keywords)
-    
-    if is_time_question:
-        # 时间相关问题返回空参数，不执行数据库查询
-        return {}
-    
-    cities = ['北京', '上海', '广州', '深圳', '杭州', '成都', '南京', '武汉', '西安', '重庆', '长沙', '天津', 
-              '苏州', '郑州', '东莞', '佛山', '宁波', '青岛', '无锡', '厦门', '济南', '合肥', '福州', '石家庄']
-    city = None
-    for c in cities:
-        if c in message:
-            city = c
-            break
-    
-    job_keywords = ['前端', '后端', 'Java', 'Python', '产品', '运营', '测试', '运维', '算法', 
-                    '大数据', 'AI', '人工智能', '开发', '工程师', '经理', '主管', 'UI', '设计',
-                    '数据分析', '数据', '架构师', '安全', '网络', '嵌入式', '硬件', '科研']
-    job_title = None
-    for keyword in job_keywords:
-        if keyword in message:
-            job_title = keyword
-            break
-    
-    industries = ['互联网', '金融', '教育', '医疗', '电商', '游戏', '软件', '硬件', '制造', '建筑']
-    industry = None
-    for ind in industries:
-        if ind in message:
-            industry = ind
-            break
-    
-    salary_min = None
-    salary_max = None
-    salary_patterns = [
-        r'(\d+)k?-(\d+)k?',
-        r'(\d+)万',
-        r'薪资(\d+)',
-    ]
-    for pattern in salary_patterns:
-        match = regex.search(pattern, message)
-        if match:
-            if len(match.groups()) >= 2:
-                salary_min = int(match.group(1)) * 1000
-                salary_max = int(match.group(2)) * 1000
-            else:
-                salary_min = int(match.group(1)) * 1000
-            break
-    
-    return {
-        'city': city,
-        'job_title': job_title,
-        'industry': industry,
-        'salary_min': salary_min,
-        'salary_max': salary_max
-    }
+# 已移除公司信息搜索相关函数（extract_search_params, search_company_info, build_prompt_with_company_info）
 
-def search_company_info(params):
-    """根据参数搜索公司职位信息"""
-    queryset = CompanyInfo.objects.all()
+def build_user_profile_prompt(request):
+    """从数据库获取用户数据并构建提示词"""
+    user = None
     
-    if params.get('city'):
-        queryset = queryset.filter(address__icontains=params['city'])
-    
-    if params.get('job_title'):
-        queryset = queryset.filter(job_title__icontains=params['job_title'])
-    
-    if params.get('industry'):
-        queryset = queryset.filter(industry__icontains=params['industry'])
-    
-    queryset = queryset.order_by('-update_date')[:20]
-    
-    return list(queryset)
-
-def build_prompt_with_company_info(user_message, companies_info, chat_history=None):
-    """构建包含数据库查询结果的提示词"""
-    # 检查是否是时间相关问题（更全面的时间关键词）
-    time_keywords = ['时间', '几点', '几号', '今天', '现在', '日期', '星期', '几点钟', '何时', '此刻']
-    is_time_question = any(keyword in user_message for keyword in time_keywords)
-    
-    if is_time_question:
-        # 时间相关问题直接返回时间
-        current_time = get_time()
-        return f"当前时间是：{current_time}"
-    
-    if not companies_info:
-        # 构建包含对话历史的提示词
-        prompt = ""
-        
-        # 添加对话历史
-        if chat_history:
-            prompt += "对话历史：\n"
-            for msg in chat_history:
-                if msg['user']:
-                    prompt += f"用户：{msg['user']}\n"
-            prompt += "\n"
-        
-        prompt += f"用户问：{user_message}\n\n数据库中没有找到相关公司职位信息，请根据你的知识回答用户的问题。"
-        
-        return prompt
-    
-    prompt = ""
-    
-    # 添加对话历史
-    if chat_history:
-        prompt += "对话历史：\n"
-        for msg in chat_history:
-            if msg['user']:
-                prompt += f"用户：{msg['user']}\n"
-        prompt += "\n"
-    
-    prompt += f"用户问：{user_message}\n\n从数据库中查到以下相关公司职位信息（基于真实数据，共{len(companies_info)}条）：\n\n"
-    
-    company_dict = {}
-    for info in companies_info:
-        if info.company_name not in company_dict:
-            company_dict[info.company_name] = {
-                'name': info.company_name,
-                'address': info.address,
-                'scale': info.company_scale,
-                'type': info.company_type,
-                'industry': info.industry,
-                'details': info.company_details[:200] if info.company_details else '',
-                'jobs': []
-            }
-        company_dict[info.company_name]['jobs'].append({
-            'title': info.job_title,
-            'salary': info.salary_range,
-            'details': info.job_details[:100] if info.job_details else ''
-        })
-    
-    for idx, (name, data) in enumerate(list(company_dict.items())[:10], 1):
-        prompt += f"【公司{idx}】\n"
-        prompt += f"公司名称：{data['name']}\n"
-        prompt += f"地址：{data['address']}\n"
-        prompt += f"规模：{data['scale']}\n"
-        prompt += f"类型：{data['type']}\n"
-        prompt += f"行业：{data['industry']}\n"
-        if data['details']:
-            prompt += f"公司介绍：{data['details']}...\n"
-        
-        if data['jobs']:
-            prompt += f"相关职位：\n"
-            for job in data['jobs'][:3]:
-                prompt += f"   - {job['title']}（{job['salary']}）\n"
-        
-        prompt += "\n"
-    
-    # 从数据库获取提示词
-    from ai_integration.langgraph.utils.prompt_manager import get_prompt
-    recommendation_prompt = get_prompt('recommendation')
-    # 提取公司信息相关的提示词部分
-    if '当提供公司信息时' in recommendation_prompt:
-        company_prompt = recommendation_prompt.split('当提供公司信息时，')[1].split('当需要职业推荐时')[0]
-        prompt += f"请根据以上真实数据回答用户问题。你应该：{company_prompt}"
+    # 尝试从请求中获取用户
+    if hasattr(request, 'user') and request.user.is_authenticated:
+        user = request.user
     else:
-        # 备用提示词
-        prompt += f"请根据以上真实数据回答用户问题。你应该：\n"
-        prompt += f"1. 先总结找到{len(company_dict)}家相关公司\n"
-        prompt += f"2. 详细介绍这些公司的信息（包括规模、类型、行业等）\n"
-        prompt += f"3. 重点介绍相关职位和薪资情况\n"
-        prompt += f"4. 给出求职建议\n"
+        # 如果没有认证用户，尝试从请求头获取token并查找用户
+        auth_header = request.headers.get('Authorization', '')
+        if auth_header.startswith('Token '):
+            token = auth_header.split(' ')[1]
+            from rest_framework.authtoken.models import Token
+            try:
+                token_obj = Token.objects.get(key=token)
+                user = token_obj.user
+            except Token.DoesNotExist:
+                pass
+    
+    if not user:
+        return ""
+    
+    # 构建用户信息提示词
+    profile_parts = []
+    
+    # 基本信息
+    if getattr(user, 'name', ''):
+        profile_parts.append(f"姓名：{user.name}")
+    if getattr(user, 'username', '') and not getattr(user, 'name', ''):
+        profile_parts.append(f"用户名：{user.username}")
+    if getattr(user, 'gender', ''):
+        profile_parts.append(f"性别：{user.gender}")
+    
+    # 教育背景
+    if getattr(user, 'school', ''):
+        profile_parts.append(f"学校：{user.school}")
+    if getattr(user, 'major', ''):
+        profile_parts.append(f"专业：{user.major}")
+    if getattr(user, 'grade', ''):
+        profile_parts.append(f"年级：{user.grade}")
+    if getattr(user, 'education', ''):
+        profile_parts.append(f"学历：{user.education}")
+    
+    # 技能信息
+    skills = []
+    if getattr(user, 'skills', ''):
+        skills.extend([s.strip() for s in str(user.skills).split(",") if s.strip()])
+    if getattr(user, 'other_skills', ''):
+        skills.extend([s.strip() for s in str(user.other_skills).split(",") if s.strip()])
+    if skills:
+        profile_parts.append(f"技能：{', '.join(skills)}")
+    
+    # 职业相关
+    if getattr(user, 'career_goal', ''):
+        profile_parts.append(f"职业期望：{user.career_goal}")
+    if getattr(user, 'self_introduction', ''):
+        profile_parts.append(f"自我介绍：{user.self_introduction}")
+    if getattr(user, 'profile', ''):
+        profile_parts.append(f"个人简介：{user.profile}")
+    
+    # 社交信息
+    if getattr(user, 'github', ''):
+        profile_parts.append(f"GitHub：{user.github}")
+    
+    if not profile_parts:
+        return ""
+    
+    # 构建完整的提示词
+    prompt = """【用户档案信息】
+以下是用户的个人信息，请在回答时参考这些信息提供个性化的职业规划建议：
+
+"""
+    prompt += "\n".join(profile_parts)
+    prompt += "\n\n"
     
     return prompt
 
@@ -399,19 +311,17 @@ def llm_chat(request):
             }
         )
         
-        # 获取短期记忆（最近的用户发言）
+        # 获取短期记忆（最近的对话）
         chat_history = []
         if conversation.context_aware:
-            # 获取最近的对话对，然后提取用户输入
+            # 获取最近的对话对
             recent_pairs = AIChatPair.objects.filter(conversation=conversation).order_by('-input_time')[:conversation.short_term_memory_size]
-            # 只提取用户输入，反转顺序以保持时间顺序
-            user_inputs = list(reversed([pair.user_input for pair in recent_pairs]))
-            # 构建聊天历史格式
+            # 构建聊天历史格式（保留完整对话）
             chat_history = []
-            for user_input in user_inputs:
+            for pair in reversed(recent_pairs):
                 chat_history.append({
-                    'user': user_input,
-                    'ai': ''  # AI输出设为空，只保留用户输入
+                    'user': pair.user_input,
+                    'ai': pair.ai_output  # 正确字段名是 ai_output
                 })
         
         logger.info(f"Chat history length: {len(chat_history)}")
@@ -421,35 +331,33 @@ def llm_chat(request):
         is_review_mode = actual_mode == 'review'
         is_career_mode = actual_mode == 'career'
         is_normal_mode = actual_mode == 'normal'
-        companies_info = []
 
-        if is_interview_mode or is_review_mode or is_normal_mode:
-            # 构建包含上下文的提示词
-            context_prompt = ""
-            if chat_history:
-                context_prompt = "\n\n对话历史：\n"
-                for i, msg in enumerate(chat_history):
-                    if msg['user']:  # 只添加非空的用户输入
-                        context_prompt += f"用户：{msg['user']}\n"
-            
-            enhanced_prompt = context_prompt + user_message
-            logger.info(f"{'Review' if is_review_mode else 'Interview' if is_interview_mode else 'Normal'} mode: using context-aware prompt")
-        else:
-            search_params = extract_search_params(user_message)
-            logger.info(f"Extracted search params: {search_params}")
-            
-            companies_info = search_company_info(search_params)
-            logger.info(f"Found {len(companies_info)} company records")
-            
-            # 构建包含上下文的提示词
-            context_prompt = ""
-            if chat_history:
-                context_prompt = "\n\n对话历史：\n"
-                for i, msg in enumerate(chat_history):
-                    if msg['user']:  # 只添加非空的用户输入
-                        context_prompt += f"用户：{msg['user']}\n"
-            
-            enhanced_prompt = build_prompt_with_company_info(user_message, companies_info, chat_history) + context_prompt
+        # 构建包含上下文的提示词
+        context_prompt = ""
+        
+        # 职业规划模式下，先从数据库获取用户数据并注入提示词
+        if is_career_mode:
+            user_profile_prompt = build_user_profile_prompt(request)
+            if user_profile_prompt:
+                context_prompt = user_profile_prompt
+        
+        # 复盘模式下，使用专门的复盘提示词
+        if is_review_mode:
+            review_prompt = get_prompt('review')
+            if review_prompt:
+                context_prompt = review_prompt + "\n\n"
+        
+        if chat_history:
+            context_prompt += "对话历史：\n"
+            for msg in chat_history:
+                if msg['user']:
+                    context_prompt += f"用户：{msg['user']}\n"
+                if msg['ai']:  # ✅ 添加AI回复到提示词
+                    context_prompt += f"面试官：{msg['ai']}\n"
+        
+        enhanced_prompt = context_prompt + user_message
+        mode_name = 'Career' if is_career_mode else ('Review' if is_review_mode else 'Interview' if is_interview_mode else 'Normal')
+        logger.info(f"{mode_name} mode: using context-aware prompt")
         
         logger.info(f"Enhanced prompt length: {len(enhanced_prompt)}")
         
@@ -462,48 +370,37 @@ def llm_chat(request):
             if len(enhanced_prompt) > max_prompt_length:
                 enhanced_prompt = enhanced_prompt[:max_prompt_length] + "..."
             
-            # 构建公司数据
-            companies_data = []
-            seen_companies = set()
-            for info in companies_info:
-                if info.company_name not in seen_companies:
-                    seen_companies.add(info.company_name)
-                    companies_data.append({
-                        'id': info.id,
-                        'name': info.company_name,
-                        'address': info.address,
-                        'scale': info.company_scale,
-                        'type': info.company_type,
-                        'industry': info.industry,
-                        'job_title': info.job_title,
-                        'salary_range': info.salary_range,
-                        'description': info.company_details[:200] if info.company_details else '',
-                        'job_details': info.job_details[:100] if info.job_details else ''
-                    })
-            
             def llm_chat_tts_work(llm, messages, mq, is_interview_mode_flag):
                 async def run_tts_tasks():
+                    # ==============================================
+                    # TTS 已强制禁用 - 防止产生费用
+                    # 如需启用，请将下面的 True 改为 False
+                    # ==============================================
+                    TTS_FORCE_DISABLED = True
+                    
+                    if TTS_FORCE_DISABLED:
+                        logger.info("TTS IS FORCE DISABLED - No audio will be generated")
+                        for chunk in llm.stream(messages):
+                            if hasattr(chunk, "content") and chunk.content:
+                                mq.put_nowait({'content': chunk.content})
+                        return
+                    
+                    # ==============================================
+                    # 以下代码已被禁用，不会执行
+                    # ==============================================
+                    enable_tts = os.getenv('ENABLE_TTS', 'false').lower() == 'true'
+                    
+                    if not is_interview_mode_flag or not enable_tts:
+                        logger.info(f"TTS disabled - interview_mode={is_interview_mode_flag}, enable_tts={enable_tts}")
+                        for chunk in llm.stream(messages):
+                            if hasattr(chunk, "content") and chunk.content:
+                                mq.put_nowait({'content': chunk.content})
+                        return
+                    
+                    logger.warning("WARNING: TTS IS ENABLED - This will incur costs!")
+                    
                     tts_api_key = os.getenv('api_key')
                     wss_url = os.getenv('WSS_URL')
-
-                    if not is_interview_mode_flag:
-                        mq.put_nowait({'debug': "Not interview mode, returning text only"})
-                        for chunk in llm.stream(messages):
-                            if hasattr(chunk, "content") and chunk.content:
-                                mq.put_nowait({'content': chunk.content})
-                        return
-                    
-                    if not tts_api_key:
-                        for chunk in llm.stream(messages):
-                            if hasattr(chunk, "content") and chunk.content:
-                                mq.put_nowait({'content': chunk.content})
-                        return
-                    
-                    if not wss_url:
-                        for chunk in llm.stream(messages):
-                            if hasattr(chunk, "content") and chunk.content:
-                                mq.put_nowait({'content': chunk.content})
-                        return
              
                     headers = {"Authorization": f"Bearer {tts_api_key}"}
                     
@@ -511,16 +408,7 @@ def llm_chat(request):
                     
                         llm_stream = llm.stream(messages)
 
-                        for chunk in llm_stream:
-                            if hasattr(chunk, "content"):
-                                mq.put_nowait({'debug': f"Chunk has content attribute, length: {len(chunk.content) if chunk.content else 0}"})
-                                if chunk.content:
-                                   
-                                    mq.put_nowait({'content': chunk.content})
-                                
-                                    break
-                            else:
-                                mq.put_nowait({'debug': "Chunk has no content attribute"})
+                        
                     
                         async with websockets.connect(wss_url, additional_headers=headers) as ws:
                             task_id = uuid.uuid4().hex
@@ -615,9 +503,6 @@ def llm_chat(request):
             
             def stream_generator():
                 response_content = ""
-                
-                if companies_data:
-                    yield f'data: {{"type": "companies", "data": {json.dumps(companies_data, ensure_ascii=False)}}}\n\n'
                 
                 from langchain_openai import ChatOpenAI
                 
@@ -1770,22 +1655,22 @@ def get_user_interview_reviews(request):
         if not user.is_authenticated:
             return JsonResponse({"success": False, "error": "未登录"}, status=401)
         
-        # 查询用户的复盘模式会话
-        review_conversations = AIConversation.objects.filter(
-            user=user, 
-            mode='review'
+        # 查询用户的复盘记录
+        review_records = InterviewReviewRecord.objects.filter(
+            user=user
         ).order_by('-created_at')[:10]
         
         result = []
-        for conv in review_conversations:
-            # 获取最近的问答对
-            latest_pair = conv.pairs.last()
+        for record in review_records:
             result.append({
-                'id': conv.id,
-                'session_id': conv.session_id,
-                'created_at': conv.created_at.strftime('%Y-%m-%d %H:%M'),
-                'latest_content': latest_pair.ai_output[:150] + '...' if latest_pair else '无内容',
-                'pair_count': conv.pairs.count()
+                'id': record.id,
+                'session_id': record.conversation.session_id if record.conversation else '',
+                'interview_style': record.interview_style,
+                'overall_score': record.overall_score,
+                'interview_duration': record.interview_duration,
+                'pair_count': record.question_count,  # 前端期望的字段名
+                'created_at': record.created_at.strftime('%Y-%m-%d %H:%M'),
+                'latest_content': record.review_content[:150] + '...' if record.review_content else '无内容'  # 前端期望的字段名
             })
         
         return JsonResponse({
@@ -1798,3 +1683,213 @@ def get_user_interview_reviews(request):
             "success": False,
             "error": str(e)
         }, status=500)
+
+
+@api_view(['GET'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([AllowAny])
+def get_interview_review_detail(request, session_id):
+    """
+    获取单个面试复盘记录的详细内容
+    """
+    if request.method != 'GET':
+        return JsonResponse({'error': 'Method not allowed'}, status=405)
+    
+    try:
+        user = request.user
+        if not user.is_authenticated:
+            return JsonResponse({"success": False, "error": "未登录"}, status=401)
+        
+        # 先查找关联的会话
+        conversation = None
+        try:
+            conversation = AIConversation.objects.get(session_id=session_id)
+        except AIConversation.DoesNotExist:
+            pass
+        
+        # 查询复盘记录
+        review_record = None
+        if conversation:
+            review_record = InterviewReviewRecord.objects.filter(
+                user=user,
+                conversation=conversation
+            ).first()
+        
+        if not review_record:
+            # 如果通过会话找不到，尝试通过session_id直接查找
+            review_record = InterviewReviewRecord.objects.filter(
+                user=user,
+                conversation__session_id=session_id
+            ).first()
+        
+        if not review_record:
+            return JsonResponse({
+                "success": False,
+                "error": "未找到复盘记录"
+            }, status=404)
+        
+        return JsonResponse({
+            "success": True,
+            "data": {
+                'id': review_record.id,
+                'session_id': session_id,
+                'interview_style': review_record.interview_style,
+                'overall_score': review_record.overall_score,
+                'interview_duration': review_record.interview_duration,
+                'question_count': review_record.question_count,
+                'answer_count': review_record.answer_count,
+                'review_content': review_record.review_content,
+                'strengths': review_record.strengths,
+                'weaknesses': review_record.weaknesses,
+                'suggestions': review_record.suggestions,
+                'created_at': review_record.created_at.strftime('%Y-%m-%d %H:%M')
+            }
+        })
+    except Exception as e:
+        logger.error(f"获取复盘详情失败: {str(e)}")
+        return JsonResponse({
+            "success": False,
+            "error": str(e)
+        }, status=500)
+
+
+@api_view(['POST'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([AllowAny])
+def save_interview_review(request):
+    """
+    保存面试复盘记录到数据库
+    
+    请求参数:
+        session_id: 面试会话ID
+        review_content: 复盘报告内容
+        interview_style: 面试风格
+        interview_duration: 面试时长(分钟)
+        question_count: 问题数量
+        answer_count: 回答数量
+    """
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Method not allowed'}, status=405)
+    
+    try:
+        data = json.loads(request.body)
+        
+        session_id = data.get('session_id', '')
+        review_content = data.get('review_content', '')
+        interview_style = data.get('interview_style', 'gentle')
+        interview_duration = data.get('interview_duration', 0)
+        question_count = data.get('question_count', 0)
+        answer_count = data.get('answer_count', 0)
+        
+        logger.info(f"[REVIEW] 收到保存复盘请求 - session_id: {session_id[:20]}..., authenticated: {request.user.is_authenticated}, user: {request.user}")
+        
+        if not session_id:
+            return JsonResponse({'error': 'session_id is required'}, status=400)
+        
+        user = None
+        if request.user.is_authenticated:
+            user = request.user
+            logger.info(f"[REVIEW] 用户已认证: {user.username} (ID: {user.id})")
+        
+        # 查找关联的会话
+        conversation = None
+        try:
+            conversation = AIConversation.objects.get(session_id=session_id)
+            logger.info(f"[REVIEW] 找到关联会话: {conversation.id}")
+        except AIConversation.DoesNotExist:
+            logger.warning(f"[REVIEW] 未找到关联会话: {session_id}")
+        
+        # 解析复盘内容，提取结构化数据（包含冒号）
+        strengths = extract_section(review_content, '回答的优点：', '需要改进的地方：')
+        weaknesses = extract_section(review_content, '需要改进的地方：', '具体改进建议：')
+        suggestions = extract_section(review_content, '具体改进建议：', '下次面试')
+        
+        # 尝试提取评分
+        overall_score = extract_score(review_content)
+        
+        # 创建复盘记录
+        review_record = InterviewReviewRecord.objects.create(
+            user=user,
+            conversation=conversation,
+            interview_style=interview_style,
+            interview_duration=interview_duration,
+            review_content=review_content,
+            strengths=strengths,
+            weaknesses=weaknesses,
+            suggestions=suggestions,
+            overall_score=overall_score,
+            question_count=question_count,
+            answer_count=answer_count
+        )
+        
+        logger.info(f"面试复盘记录已保存: {review_record.id}")
+        
+        return JsonResponse({
+            "success": True,
+            "message": "复盘记录保存成功",
+            "review_id": review_record.id
+        })
+    except Exception as e:
+        logger.error(f"保存面试复盘失败: {str(e)}")
+        return JsonResponse({
+            "success": False,
+            "error": str(e)
+        }, status=500)
+
+
+def extract_section(content, start_marker, end_marker):
+    """
+    从复盘内容中提取指定部分
+    """
+    if not content:
+        return None
+    
+    start_idx = content.find(start_marker)
+    if start_idx == -1:
+        return None
+    
+    start_idx += len(start_marker)
+    end_idx = content.find(end_marker, start_idx)
+    
+    if end_idx == -1:
+        section = content[start_idx:].strip()
+    else:
+        section = content[start_idx:end_idx].strip()
+    
+    # 移除序号前缀
+    lines = section.split('\n')
+    cleaned_lines = []
+    for line in lines:
+        # 移除类似 "1." "2." "（1）" 这样的序号
+        cleaned = regex.sub(r'^\s*(\d+\.|（\d+）|\d+\s*、)\s*', '', line)
+        cleaned = cleaned.strip()
+        if cleaned and cleaned != '：' and cleaned != ':':
+            cleaned_lines.append(cleaned)
+    
+    return '\n'.join(cleaned_lines)
+
+
+def extract_score(content):
+    """
+    从复盘内容中提取综合评分
+    """
+    if not content:
+        return None
+    
+    # 匹配常见的评分格式
+    patterns = [
+        r'综合评分[：:]?\s*(\d+\.?\d*)',
+        r'得分[：:]?\s*(\d+\.?\d*)',
+        r'评分[：:]?\s*(\d+\.?\d*)',
+        r'(\d+\.?\d*)\s*分'
+    ]
+    
+    for pattern in patterns:
+        match = regex.search(pattern, content)
+        if match:
+            try:
+                return float(match.group(1))
+            except ValueError:
+                continue
+    
+    return None

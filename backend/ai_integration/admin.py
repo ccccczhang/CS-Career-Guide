@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import AIConversation, AITag, CareerEvaluationRecord, CareerPlanReport, AIUsageRecord, CareerRecommendationRecord, AIChatPair, AIPrompt, SeniorAdvice
+from .models import AIConversation, AITag, CareerEvaluationRecord, CareerPlanReport, AIUsageRecord, CareerRecommendationRecord, AIChatPair, AIPrompt, SeniorAdvice, InterviewReviewRecord
 
 
 @admin.register(AITag)
@@ -123,3 +123,18 @@ class SeniorAdviceAdmin(admin.ModelAdmin):
     def approve_selected(self, request, queryset):
         queryset.update(is_approved=True)
     approve_selected.short_description = '审核通过选中的建议'
+
+
+@admin.register(InterviewReviewRecord)
+class InterviewReviewRecordAdmin(admin.ModelAdmin):
+    list_display = ('conversation', 'interview_style', 'overall_score', 'interview_duration', 'question_count', 'created_at')
+    list_filter = ('interview_style', 'created_at')
+    search_fields = ('conversation__session_id', 'review_content', 'user__username')
+    ordering = ('-created_at',)
+    readonly_fields = ('created_at', 'updated_at')
+    
+    def get_user_info(self, obj):
+        if obj.user:
+            return f"{obj.user.username} (ID: {obj.user.id})"
+        return "无"
+    get_user_info.short_description = '用户'

@@ -229,13 +229,13 @@
                   </div>
                 </div>
                 <button 
-                  class="h-12 w-12 rounded-xl flex items-center justify-center transition-all active:scale-90 relative"
+                  class="h-12 w-12 rounded-xl flex items-center justify-center transition-all active:scale-90 relative cursor-pointer"
                   :class="[
                     isSpeaking ? 'bg-error text-on-error animate-pulse' : 
                     isRecording ? 'bg-secondary text-on-secondary' : 
                     'bg-surface-container-highest text-on-surface hover:bg-surface-variant'
                   ]"
-                  :disabled="isLoading"
+                  :disabled="!isInterviewing"
                   @click="toggleRecording"
                 >
                   <svg
@@ -615,6 +615,42 @@ const finishAudio = () => {
   }
 }
 
+const stopAIAudio = () => {
+  console.log('[AUDIO] 用户开始说话，停止AI语音播放')
+  
+  try {
+    audioPlayer.pause()
+    console.log('[AUDIO] 暂停audioPlayer')
+  } catch (e) {
+    console.warn('[AUDIO] 暂停audioPlayer失败:', e)
+  }
+  
+  try {
+    if (sourceBuffer) {
+      sourceBuffer.abort()
+      console.log('[AUDIO] 中止SourceBuffer')
+    }
+  } catch (e) {
+    console.warn('[AUDIO] 中止SourceBuffer失败:', e)
+  }
+  
+  try {
+    if (mediaSource && mediaSource.readyState !== 'closed') {
+      mediaSource.endOfStream()
+      console.log('[AUDIO] 调用endOfStream')
+    }
+  } catch (e) {
+    console.warn('[AUDIO] endOfStream失败:', e)
+  }
+  
+  audioQueue = []
+  deferredAudioChunks = []
+  isAudioInitialized = false
+  isUpdating = false
+  
+  console.log('[AUDIO] AI语音已停止，音频队列已清空')
+}
+
 const initAudio = () => {
   initAudioStream()
 }
@@ -664,6 +700,9 @@ const sessionId = ref('')
 const showReview = ref(false)
 const reviewContent = ref('')
 
+// 语音合成开关 - 设置为 false 即可关闭语音合成
+const ENABLE_TTS = false // true = 开启语音合成, false = 关闭语音合成
+
 // 语音识别相关
 const isSpeaking = ref(false)
 const isRecording = ref(false)
@@ -687,6 +726,78 @@ const formatTime = (seconds) => {
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
 }
 
+// 获取用户简历信息
+const getUserResume = () => {
+  try {
+    const resumeStr = localStorage.getItem('resume')
+    if (!resumeStr) {
+      console.log('[RESUME] 未找到简历数据')
+      return null
+    }
+    
+    const resume = JSON.parse(resumeStr)
+    
+    // 构建简历提示词
+    let resumePrompt = ''
+    
+    if (resume.name) {
+      resumePrompt += `姓名：${resume.name}\n`
+    }
+    if (resume.target_position) {
+      resumePrompt += `意向岗位：${resume.target_position}\n`
+    }
+    if (resume.self_evaluation) {
+      resumePrompt += `个人自评：${resume.self_evaluation}\n`
+    }
+    if (resume.skills) {
+      resumePrompt += `专业技能：${resume.skills}\n`
+    }
+    if (resume.education && resume.education.length > 0) {
+      resumePrompt += `教育背景：\n`
+      resume.education.forEach(edu => {
+        if (edu.school) {
+          resumePrompt += `  - ${edu.school} ${edu.major || ''} ${edu.degree || ''} ${edu.period || ''}\n`
+        }
+      })
+    }
+    if (resume.experience && resume.experience.length > 0) {
+      resumePrompt += `实习经历：\n`
+      resume.experience.forEach(exp => {
+        if (exp.company) {
+          resumePrompt += `  - ${exp.company} ${exp.position || ''} ${exp.period || ''}\n`
+          if (exp.description) {
+            resumePrompt += `    ${exp.description}\n`
+          }
+        }
+      })
+    }
+    if (resume.projects && resume.projects.length > 0) {
+      resumePrompt += `项目经验：\n`
+      resume.projects.forEach(project => {
+        if (project.name) {
+          resumePrompt += `  - ${project.name} ${project.role || ''} ${project.period || ''}\n`
+          if (project.description) {
+            resumePrompt += `    ${project.description}\n`
+          }
+        }
+      })
+    }
+    if (resume.certificates && resume.certificates.length > 0) {
+      resumePrompt += `证书认证：\n`
+      resume.certificates.forEach(cert => {
+        if (cert.name) {
+          resumePrompt += `  - ${cert.name} ${cert.issuer || ''} ${cert.period || ''}\n`
+        }
+      })
+    }
+    
+    return resumePrompt.trim() || null
+  } catch (error) {
+    console.error('[RESUME] 解析简历数据失败:', error)
+    return null
+  }
+}
+
 // 方法
 async function startInterview() {
   console.log('开始面试按钮被点击，调用startInterview函数')
@@ -706,6 +817,10 @@ async function startInterview() {
   // 开始计时
   startTimer()
   console.log('计时已开始')
+  
+  // 获取用户简历
+  const resumePrompt = getUserResume()
+  console.log('[RESUME] 简历提示词:', resumePrompt ? '已加载' : '未找到')
   
   // 添加AI消息占位符
   const aiMessageIndex = messages.value.length
@@ -729,8 +844,19 @@ async function startInterview() {
       setTimeout(() => reject(new Error('请求超时')), 15000)
     })
     
-    const responsePromise = aiAPI.chatStream(
-      `【面试模式】你是一位${getStyleDescription(selectedStyle.value)}面试官。请开始一场15分钟的面试。
+    // 构建包含简历的提示词
+    let interviewPrompt = `【面试模式】你是一位${getStyleDescription(selectedStyle.value)}面试官。请开始一场15分钟的面试。`
+    
+    if (resumePrompt) {
+      interviewPrompt += `
+
+【面试者简历信息】
+${resumePrompt}
+
+请根据以上简历信息，提出针对性的面试问题。`
+    }
+    
+    interviewPrompt += `
 
 要求：
 1. 首先进行简短的自我介绍（说明你是面试官，面试风格）
@@ -739,7 +865,10 @@ async function startInterview() {
 4. 根据用户的回答，提出下一个相关问题
 5. 保持${selectedStyle.value === 'pressure' ? '压力面试' : selectedStyle.value === 'technical' ? '技术面试' : selectedStyle.value === 'behavioral' ? '行为面试' : '温和友好'}的风格
 
-现在开始面试。`,
+现在开始面试。`
+    
+    const responsePromise = aiAPI.chatStream(
+      interviewPrompt,
       promptType,
       selectedStyle.value,
       sessionId.value
@@ -814,9 +943,13 @@ async function startInterview() {
                 finishAudio()
               }
             } else if (data.type === 'audio') {
-              console.log('[TTS AUDIO] Received audio chunk:', data.audio ? `(${data.audio.length} bytes)` : 'empty')
-              if (data.audio) {
-                handleAudioChunk(data.audio)
+              if (ENABLE_TTS) {
+                console.log('[TTS AUDIO] Received audio chunk:', data.audio ? `(${data.audio.length} bytes)` : 'empty')
+                if (data.audio) {
+                  handleAudioChunk(data.audio)
+                }
+              } else {
+                console.log('[TTS AUDIO] 语音合成已禁用，跳过音频处理')
               }
             }
           } catch (e) {
@@ -978,9 +1111,13 @@ async function sendMessage(event, audioMsg = null) {
               await scrollToBottom()
             } else if (data.type === 'audio') {
               // 处理音频数据
-              console.log('[TTS AUDIO] Received audio chunk:', data.audio ? `(${data.audio.length} bytes)` : 'empty')
-              if (data.audio) {
-                handleAudioChunk(data.audio)
+              if (ENABLE_TTS) {
+                console.log('[TTS AUDIO] Received audio chunk:', data.audio ? `(${data.audio.length} bytes)` : 'empty')
+                if (data.audio) {
+                  handleAudioChunk(data.audio)
+                }
+              } else {
+                console.log('[TTS AUDIO] 语音合成已禁用，跳过音频处理')
               }
             }
           } catch (e) {
@@ -1041,7 +1178,8 @@ async function endInterview() {
   }
 }
 
-async function generateReview() {
+async function generateReview() 
+{
   // 构建对话记录
   const conversation = messages.value
     .filter(msg => msg.content && !msg.content.includes('正在生成面试复盘'))
@@ -1098,6 +1236,11 @@ ${conversation}
         if (line.startsWith('data:')) {
           const dataStr = line.substring(5).trim()
           if (dataStr) {
+            // 跳过 [DONE] 标记
+            if (dataStr === '[DONE]') {
+              console.log('[REVIEW] SSE流结束')
+              continue
+            }
             try {
               const data = JSON.parse(dataStr)
               if (data.type === 'chunk') {
@@ -1106,7 +1249,7 @@ ${conversation}
                 }
               }
             } catch (e) {
-              console.error('解析SSE数据失败:', e, 'Data:', dataStr)
+              console.warn('[REVIEW] 忽略非JSON数据:', dataStr)
             }
           }
         }
@@ -1131,14 +1274,43 @@ ${conversation}
 
 async function saveReviewRecord(reviewContent) {
   try {
-    const reviewSessionId = 'review_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9)
-    await aiAPI.saveChatRecord(
-      reviewSessionId,
-      '面试复盘请求',
-      reviewContent,
-      'review'
-    )
-    console.log('复盘记录保存成功:', reviewSessionId)
+    const interviewMsgs = messages.value.filter(m => m.content && !m.content.includes('正在生成面试复盘'))
+    const questionCount = interviewMsgs.filter(m => m.type === 'ai').length
+    const answerCount = interviewMsgs.filter(m => m.type === 'user').length
+    
+    // 计算面试时长：总时长900秒 - 剩余时间 = 已用时间
+    const totalDuration = 900 // 15分钟 = 900秒
+    const usedSeconds = totalDuration - remainingTime.value
+    const interviewDurationMinutes = Math.floor(usedSeconds / 60)
+    
+    const data = {
+      session_id: sessionId.value || 'default_session',
+      review_content: reviewContent,
+      interview_style: selectedStyle.value || 'gentle',
+      interview_duration: interviewDurationMinutes,
+      question_count: questionCount,
+      answer_count: answerCount
+    }
+    
+    const token = localStorage.getItem('token')
+    console.log('[REVIEW] 保存复盘记录 - session_id:', sessionId.value, 'token:', token ? '存在' : '不存在')
+    
+    const response = await fetch('/api/ai/interview/save_review/', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': token ? `Token ${token}` : ''
+      },
+      body: JSON.stringify(data)
+    })
+    
+    console.log('[REVIEW] 响应状态:', response.status)
+    const result = await response.json()
+    if (result.success) {
+      console.log('复盘记录保存成功:', result.review_id)
+    } else {
+      console.error('保存复盘记录失败:', result.error)
+    }
   } catch (error) {
     console.error('保存复盘记录失败:', error)
   }
@@ -1156,7 +1328,7 @@ function getStyleDescription(style) {
 
 // 语音识别相关函数
 const startRecording = async () => {
-  const baseUrl = 'http://localhost:3001/models/vad/';
+  const baseUrl = 'http://localhost:3002/models/vad/';
   try {
     const { MicVAD } = await import('@ricky0123/vad-web');
     
@@ -1167,6 +1339,8 @@ const startRecording = async () => {
         recordingDuration.value = 0;
         startDurationTimer();
         console.log('🎤 检测到语音开始！');
+        
+        stopAIAudio();
       },
       onSpeechEnd: (audio) => {
         isSpeaking.value = false;
@@ -1329,17 +1503,29 @@ const toggleRecording = () => {
     return;
   }
   
-  if (isSpeaking.value) {
-    vadInstance.stop();
+  if (isRecording.value) {
+    try {
+      if (typeof vadInstance.stop === 'function') {
+        vadInstance.stop();
+      } else if (typeof vadInstance.destroy === 'function') {
+        vadInstance.destroy();
+      }
+      console.log('⏹️  停止VAD监听');
+    } catch (e) {
+      console.warn('⚠️  停止VAD失败:', e.message);
+    }
+    
+    vadInstance = null;
+    isRecording.value = false;
     isSpeaking.value = false;
-    console.log('⏹️  手动停止语音检测');
-  } else if (isRecording.value) {
-    vadInstance.start();
-    console.log('▶️  重新开始语音监听');
+    stopDurationTimer();
+    audioLevel.value = 0;
+    console.log('⏹️  关闭语音识别');
   } else {
+    console.log('▶️  重新初始化VAD...');
+    startRecording();
     isRecording.value = true;
-    vadInstance.start();
-    console.log('▶️  开始语音监听模式');
+    console.log('▶️  打开语音识别');
   }
 };
 

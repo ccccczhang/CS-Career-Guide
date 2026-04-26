@@ -1,9 +1,30 @@
-﻿﻿<template>
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿<template>
   <div class="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-100 p-6 md:p-10">
     <div class="max-w-6xl mx-auto space-y-6">
       <header class="bg-slate-900/80 backdrop-blur-sm border border-slate-700/50 rounded-2xl p-8 shadow-xl shadow-purple-500/5">
-        <h1 class="text-3xl md:text-4xl font-bold bg-gradient-to-r from-purple-400 via-blue-400 to-cyan-400 bg-clip-text text-transparent">职业生涯规划报告</h1>
-        <p class="text-slate-300 mt-3 text-lg">目标职业：<span class="text-cyan-400 font-medium">{{ targetJob || '未选择' }}</span></p>
+        <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+          <div>
+            <h1 class="text-3xl md:text-4xl font-bold bg-gradient-to-r from-purple-400 via-blue-400 to-cyan-400 bg-clip-text text-transparent">职业生涯规划报告</h1>
+            <div class="flex flex-wrap items-center gap-3 mt-3">
+              <p class="text-slate-300 text-lg">目标职业：<span class="text-cyan-400 font-medium">{{ targetJob || '未选择' }}</span></p>
+              <span v-if="cacheHit" class="inline-flex items-center gap-1 px-3 py-1 bg-green-500/20 border border-green-500/30 rounded-full text-green-400 text-sm">
+                <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+                  <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path>
+                </svg>
+                缓存命中
+              </span>
+            </div>
+          </div>
+          <router-link 
+            to="/company-reviews" 
+            class="inline-flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-blue-500 to-cyan-500 text-white font-semibold rounded-xl hover:from-blue-600 hover:to-cyan-600 transition-all duration-300 shadow-lg hover:shadow-xl hover:shadow-blue-500/30 hover:-translate-y-0.5"
+          >
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path>
+            </svg>
+            查看企业榜单
+          </router-link>
+        </div>
       </header>
 
       <div v-if="loading" class="bg-slate-900/80 backdrop-blur-sm border border-slate-700/50 rounded-2xl p-8 flex items-center justify-center shadow-lg">
@@ -192,6 +213,7 @@ const loading = ref(true)
 const error = ref('')
 const report = ref({})
 const targetJob = ref('')
+const cacheHit = ref(false)
 
 function getUserProfileFromLocalStorage() {
   const raw = localStorage.getItem('selfIntroduction')
@@ -227,6 +249,55 @@ function getTargetJobFromLocalStorage() {
   return ''
 }
 
+function generateCacheKey(userProfile, targetJob) {
+  const profileStr = JSON.stringify({
+    major: userProfile.major,
+    education: userProfile.education,
+    skills: userProfile.skills.sort(),
+    personality: userProfile.personality,
+    school: userProfile.school,
+    grade: userProfile.grade,
+    self_introduction: userProfile.self_introduction,
+    career_goal: userProfile.career_goal
+  })
+  const combined = `${targetJob}_${profileStr}`
+  try {
+    return btoa(encodeURIComponent(combined)).replace(/[+/=]/g, (c) => ({'+':'-', '/':'_', '=':''}[c]))
+  } catch (e) {
+    console.warn('btoa failed, using alternative method:', e)
+    return Array.from(new TextEncoder().encode(combined))
+      .map(b => b.toString(16).padStart(2, '0'))
+      .join('')
+  }
+}
+
+function getCachedReport(cacheKey) {
+  try {
+    const cachedData = localStorage.getItem(`careerReport_${cacheKey}`)
+    if (cachedData) {
+      const parsed = JSON.parse(cachedData)
+      if (parsed.expireTime && parsed.expireTime > Date.now()) {
+        return parsed.report
+      }
+    }
+  } catch (e) {
+    console.error('读取缓存失败:', e)
+  }
+  return null
+}
+
+function setCachedReport(cacheKey, reportData) {
+  try {
+    const cachedData = {
+      report: reportData,
+      expireTime: Date.now() + 7 * 24 * 60 * 60 * 1000
+    }
+    localStorage.setItem(`careerReport_${cacheKey}`, JSON.stringify(cachedData))
+  } catch (e) {
+    console.error('写入缓存失败:', e)
+  }
+}
+
 onMounted(async () => {
   try {
     const userProfile = getUserProfileFromLocalStorage()
@@ -238,12 +309,23 @@ onMounted(async () => {
       return
     }
 
-    const resp = await aiAPI.careerReport(userProfile, targetJob.value)
-    if (!resp.success) {
-      throw new Error(resp.error || '职业报告生成失败')
+    const cacheKey = generateCacheKey(userProfile, targetJob.value)
+    const cachedReport = getCachedReport(cacheKey)
+
+    if (cachedReport) {
+      cacheHit.value = true
+      report.value = cachedReport
+      console.log('缓存命中，直接使用缓存数据')
+    } else {
+      const resp = await aiAPI.careerReport(userProfile, targetJob.value)
+      if (!resp.success) {
+        throw new Error(resp.error || '职业报告生成失败')
+      }
+
+      report.value = resp.data || {}
+      setCachedReport(cacheKey, report.value)
     }
 
-    report.value = resp.data || {}
     localStorage.setItem('careerReport', JSON.stringify(report.value))
   } catch (e) {
     error.value = e.message || '生成职业报告失败'
