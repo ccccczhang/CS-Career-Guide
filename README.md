@@ -12,66 +12,75 @@
 ## 🏗️ 技术架构
 
 ### 前端技术栈
+
 - **框架**: Vue 3 + Vue Router + Pinia
 - **UI组件**: DaisyUI
 - **构建工具**: Vite
 - **样式**: Tailwind CSS
 
 ### 后端技术栈
+
 - **框架**: Django + Django REST Framework
-- **数据库**: PostgreSQL + Redis + LanceDB
+- **数据库**: MySQL + LanceDB
 - **AI集成**: LangGraph 多智能体工作流
 - **语义搜索**: Sentence-BERT (bge-small-zh-v1.5)
 
 ### 预留功能接口
+
 - 国内大模型API接口
 - 3D数字人接口
 
 ## ✨ 核心功能模块
 
 ### 1. 职业发展路径选择
+
 - 就业、考研、考公、入伍、创业五大方向
 - 20+ 细分技术方向的技能树
 - 根据技术趋势动态更新的学习路径
 
 ### 2. 职业测评系统
+
 - 多维人格评估
 - 技术栈匹配度分析
 - 个性化职业建议
 
 ### 3. 企业评价系统
+
 - 真实职场评价（脱敏处理）
 - 企业推荐与预警
 - 严格的人工审核与身份核验
 
 ### 4. AI 面试模拟仓
+
 - 深度集成 LangGraph 多智能体
 - 模拟真实技术面试官
 - 实时反馈与专业改进建议
 - 支持语音交互（ASR/TTS）
 
 ### 5. 简历管理
+
 - 简历创建与优化
 - 模板选择
 - 简历投递跟踪
 
 ### 6. 语义搜索
+
 - 基于向量数据库的智能搜索
 - 支持关键词搜索、语义搜索、混合搜索
 
 ## 🚀 快速开始
 
 ### 环境要求
+
 - Python >= 3.8
 - Node.js >= 18
-- PostgreSQL >= 14
-- Redis >= 7
+- MySQL >= 8.0
 
 ### 后端启动
 
 ```bash
+pip install . 
 cd backend
-pip install -r requirements.txt
 python manage.py migrate
 python manage.py runserver 0.0.0.0:8000
 ```
@@ -87,11 +96,15 @@ npm run dev
 ### 配置说明
 
 1. 创建 `backend/.env` 文件：
+
 ```env
 DEBUG=True
 SECRET_KEY=your-secret-key
-DATABASE_URL=postgres://user:password@localhost:5432/career_guide
-REDIS_URL=redis://localhost:6379/0
+DATABASE_NAME=cs_career_guide
+DATABASE_USER=root
+DATABASE_PASSWORD=your-password
+DATABASE_HOST=localhost
+DATABASE_PORT=3306
 ```
 
 ## 🌟 技术亮点
