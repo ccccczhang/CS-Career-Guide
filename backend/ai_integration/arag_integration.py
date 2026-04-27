@@ -258,22 +258,28 @@ class ARAGCareerSearch:
                     import os
                     
                     # 尝试加载本地模型（支持多种缓存路径）
-                    model_name = 'all-MiniLM-L6-v2'
+                    model_name = 'bge-small-zh-v1.5'
                     local_model_paths = [
-                        # HuggingFace Hub 默认缓存路径
+                        # HuggingFace Hub 默认缓存路径 (BAAI/bge-small-zh-v1.5)
                         os.path.join(
                             os.path.expanduser('~'),
                             '.cache', 'huggingface', 'hub',
-                            f'models--sentence-transformers--{model_name.replace("-", "--")}'
+                            f'models--BAAI--{model_name}'  # 注意：模型名不需要替换-为--
                         ),
-                        # sentence_transformers 旧版缓存路径
+                        # sentence_transformers 缓存路径
                         os.path.join(
                             os.path.expanduser('~'),
                             '.cache', 'torch', 'sentence_transformers',
-                            f'sentence-transformers_{model_name}'
+                            f'BAAI_{model_name}'
+                        ),
+                        # 另一个常见缓存路径
+                        os.path.join(
+                            os.path.expanduser('~'),
+                            '.cache', 'huggingface', 'hub',
+                            f'models--sentence-transformers--{model_name}'
                         ),
                         # 直接使用模型名称（会自动下载）
-                        model_name
+                        f'BAAI/{model_name}'
                     ]
                     
                     self._model = None
@@ -289,8 +295,9 @@ class ARAGCareerSearch:
                     # 如果本地路径都不行，尝试直接下载
                     if self._model is None:
                         try:
-                            self._model = SentenceTransformer(model_name)
-                            logger.info(f"Model downloaded and loaded: {model_name}")
+                            # 使用 BAAI/ 前缀确保下载正确的模型
+                            self._model = SentenceTransformer(f'BAAI/{model_name}')
+                            logger.info(f"Model downloaded and loaded: BAAI/{model_name}")
                         except Exception as e:
                             logger.warning(f"Failed to download model: {str(e)}")
                             self._model = None

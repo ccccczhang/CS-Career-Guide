@@ -1,4 +1,4 @@
-﻿import axios from 'axios'
+import axios from 'axios'
 
 const api = axios.create({
   baseURL: '/api',
@@ -29,7 +29,23 @@ api.interceptors.request.use(
 
 api.interceptors.response.use(
   response => response.data,
-  error => Promise.reject(error)
+  error => {
+    // 处理 401 错误：Token 过期或无效
+    if (error.response && error.response.status === 401) {
+      console.error('Token 已过期或无效，自动登出')
+      // 清除本地存储的用户数据
+      localStorage.removeItem('token')
+      localStorage.removeItem('user')
+      localStorage.removeItem('selfIntroduction')
+      localStorage.removeItem('careerAnalysis')
+      localStorage.removeItem('careerRecommendations')
+      // 跳转到登录页（避免无限循环）
+      if (window.location.pathname !== '/login' && window.location.pathname !== '/register') {
+        window.location.href = '/login'
+      }
+    }
+    return Promise.reject(error)
+  }
 )
 
 dbApi.interceptors.response.use(

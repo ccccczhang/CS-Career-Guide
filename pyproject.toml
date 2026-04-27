@@ -1,25 +1,26 @@
 [project]
 name = "cs-career-guide"
 version = "1.0.0"
-description = "CS Career Guide backend API"
+description = "计算机学院本科生就业指南 - 全栈职业指导平台，通过AI技术提供职业规划、面试模拟等服务"
 authors = [
-    { name = "Your Name", email = "your.email@example.com" }
+    { name = "CS Career Guide Team", email = "career@cs.edu.cn" }
 ]
-license = "MIT"                               # 改为 SPDX 字符串，弃用 { file = ... }
+license = "MIT"
 readme = "README.md"
 requires-python = ">=3.8"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Framework :: Django",
     "Framework :: Django :: 4.2",
+    "Intended Audience :: Education",
     "Intended Audience :: Developers",
-    # "License :: OSI Approved :: MIT License",  # 已弃用，用上面的 license 字段代替
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Topic :: Internet :: WWW/HTTP",
     "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
+    "Topic :: Education",
 ]
 dependencies = [
     "Django==4.2.7",
@@ -28,6 +29,14 @@ dependencies = [
     "python-dotenv==1.0.0",
     "requests==2.31.0",
     "beautifulsoup4==4.12.2",
+    "langgraph==0.0.35",
+    "langchain==0.1.0",
+    "sentence-transformers==2.2.2",
+    "lancedb==0.4.0",
+    "pyarrow==15.0.0",
+    "numpy==1.26.0",
+    "jieba==0.42.1",
+    "redis==5.0.0",
 ]
 
 [project.optional-dependencies]
@@ -50,11 +59,10 @@ full = [
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
-# 指定要打包的 Python 包（避免自动发现 frontend 等非代码目录）
 [tool.setuptools.packages.find]
-where = ["."]                     # 从项目根目录查找
-include = ["backend*"]            # 包含 backend 及其所有子包
-exclude = ["frontend*", "tests*"] # 排除 frontend 及其他不需要的目录
+where = ["."]
+include = ["backend*"]
+exclude = ["frontend*", "tests*"]
 
 [tool.black]
 line-length = 88
