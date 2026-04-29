@@ -20,17 +20,6 @@ from django.core.cache import cache
 import logging
 logger = logging.getLogger(__name__)
 
-# 尝试导入arag工具
-try:
-    from arag.tools.keyword_search import KeywordSearchTool
-    from arag.tools.semantic_search import SemanticSearchTool
-    from arag.tools.read_chunk import ReadChunkTool
-    from arag.core.context import AgentContext
-    ARAG_AVAILABLE = True
-except ImportError:
-    ARAG_AVAILABLE = False
-    logger.warning("ARAG not available, using fallback implementations")
-
 
 class ARAGCareerSearch:
     """基于A-RAG的职业推荐搜索类"""
