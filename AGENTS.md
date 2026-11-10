@@ -14,3 +14,13 @@
 - 当前面试默认走 legacy 适配器和共享流式接口。修改前阅读 [面试重构边界](docs/interview-refactor.md)，不要仅凭 LangGraph 文件存在就改变现有主链路。
 
 这些规则用于提供默认协作方式，不撤销当前会话已有授权；用户明确指令优先。
+
+## 项目性质
+
+本项目包含大量二进制/媒体资源，AI 助手只需关注文本源码。
+
+## 不要读取的文件与目录
+
+- 所有二进制与媒体文件：*.glb, *.wasm, *.png, *.jpg, *.webp, *.onnx
+- 数据/序列化文件：*.lance, *.txn, *.manifest
+- 构建产物与依赖：dist/, build/, node_modules/, .next/
