@@ -1,6 +1,6 @@
 # 成员2：评估与参数调优
 
-依照 [当前方案](../career_platform_plan.md) 和 [公共约定](00-shared-contracts.md)。已有职业评估页面不能视为本模块完成；目前 EvaluationRun、staff路由和页面可启动，评估执行/查询/导出均501。
+依照 [当前方案](../career_platform_plan.md) 和 [公共约定](00-shared-contracts.md)。已有职业评估页面不能视为本模块完成；骨架阶段 EvaluationRun、staff 路由和页面可启动，评估执行/查询/导出均 501。2026-11-09 起，`question` 任务的评估运行、查询与导出已实现（见文末实施与实验记录）；岗位匹配与简历匹配策略仍依赖成员1/3 的正式服务。
 
 ## 目标、目录和不做范围
 
@@ -15,6 +15,8 @@
 未注册数据集/策略或非法K返回400且零成功记录；依赖不可用时明确失败，不能以空预测冒充有效基线。可复现离线策略相同输入必须相同；真实LLM需记录温度/种子支持情况和非确定性限制，不能声称逐字可复现。记录ID属于创建管理员，另一个管理员读取返回404。
 
 ## 固定指标与样例
+
+2026-11-09 已提供可独立调用的纯内存 `TextRetrievalStrategy`，输入候选字典、查询条件与 Top-K，输出 `RankedQuestion[]`。默认题干/标签/参考要点/参考答案权重为 `4/3/2/1`，`min_score=0` 且非空查询零匹配必定排除；参数、分词与调用方式见[成员4文本基线说明](04-interview-rag.md#2026-11-09-纯内存文本检索基线)。当前仅完成算法单元测试，虚构测试题不是正式评估集；尚未接入 EvaluationService，也没有正式相关性指标或调优效果结论。
 
 设K=5、相关集合R、去重后的前K预测P；Precision@K=命中数/K（不足K的空位算未命中），Recall@K=命中数/|R|，F1为前两者调和均值，HitRate@K为该query是否命中，MRR为首个相关结果名次倒数（无命中0）。逐query宏平均；R为空的样本作为无关检测组单列，不与正常相关样本分母混算。重复ID不能重复计分。非法未知ID记无关并保留诊断。
 
@@ -137,5 +139,120 @@
   "scope": "88 项交付单元测试通过。首次网关镜像改走已授权 ACR 专用基础设施标签，按 digest/image ID 验证；业务接口和固定验收保持原样，现有完整业务 14 failures/3 errors 为 501 骨架。",
   "limitations": "此交付验证不代表五模块实现；没有重启线上后端、迁移数据或真实模型调用。此前 SSH 传输超时，审计确认旧容器未变。",
   "evidence": "ci/test_server_maintenance.py; ci/cutover_smoke.py; Actions 41311002510; docs/deployment-status.md"
+}
+```
+
+### 2026-11-02 发布门禁复核
+
+本次调整既有职业评估页面及 career_evaluation 接口，同时涉及公共导航。新的 career-platform 评估数据集、指标计算、策略对照和导出服务没有实现；既有职业评估界面可用不能作为 evaluation complete 成功证据。
+
+```acceptance-record
+{
+  "commit": "c34a98a6a2d0538e3b9c47d53f2e0c066e326202",
+  "command": "python ci/project_acceptance.py --stage scaffold --output .runtime/gate-repair/scaffold.json; python ci/project_acceptance.py --stage complete --module all --output .runtime/gate-repair/complete.json",
+  "result": "failed",
+  "environment": "2026-11-02；Windows；现有 D:/python/python.exe；隔离内存 SQLite；PLATFORM_TEST_MYSQL=0",
+  "scope": "骨架 7 项通过；固定完整业务验收 17 项为 14 failures、3 errors，五模块 501 / FeatureNotImplemented。测试提交 c34a98a 与部署目标 master 0f64e4e 的 tree 均为 cb53fd5f04e5e5197b289dadef18a8aea55c48b3。",
+  "limitations": "五个业务模块尚未实现，本次未修改业务代码、固定测试或门禁。未重新验证 MySQL、真实模型或浏览器，未执行镜像发布、服务器重建或线上迁移。用户选择保留门禁，完整验收通过前不部署。",
+  "evidence": ".runtime/gate-repair/scaffold.json; .runtime/gate-repair/scaffold.log; .runtime/gate-repair/complete.json; .runtime/gate-repair/complete.log; GitHub Actions 41456388774（文档门禁失败、应用测试/双镜像/联调成功）；41467510972（只读 SSH 审计成功）"
+}
+```
+
+
+### 2026-11-09 文本检索演示发布候选
+
+本次新增经过 Token 鉴权的 `POST /api/career-platform/questions/demo-retrieve/`，与正式 `questions/retrieve/` 隔离。页面 `/career-platform/practice` 改为明确标注的文本检索演示，提供条件筛选、排名与来源证据。候选为 `rag/demo.py` 专门编写的9条虚构演示材料，不导入测试 fixture、不写数据库、不创建会话或反馈；pending/restricted 不返回。正式五模块服务和旧自由面试边界保留。共享 URL 新增使本次按原规则核对六份文档与全部固定验收，不降低既有用例。详细输入、输出和范围见成员4说明。
+
+```acceptance-record
+{
+  "commit": "93640dd + dirty",
+  "command": "python -m unittest discover -s backend/tests -p test_text_retrieval.py -v; python -m unittest discover -s backend/tests -p test_retrieval_demo.py -v; node --test frontend/tests/*.test.mjs; node frontend/node_modules/vite/bin/vite.js build (cwd=frontend); python ci/project_acceptance.py --stage scaffold; python ci/project_acceptance.py --stage complete --module all",
+  "result": "failed",
+  "environment": "2026-11-09；Windows；隔离内存 SQLite；本地浏览器通过隔离预览 API 调用真实文本策略，无生产数据",
+  "scope": "文本策略17项、演示接口6项、前端78项和生产构建通过；骨架7项通过。固定完整业务17项仍为14 failures、3 errors，原因是五模块正式服务501。独立演示不冒充正式业务完成。",
+  "limitations": "仅发布候选准备。用户明确授权将标注演示的半成品部署到现有网站；允许使用既有手动发布流程，固定测试和门禁规则不改。未接数据库题库、真实模型、练习记录；远端CI、发布和线上浏览器结果另记。",
+  "evidence": "backend/tests/test_text_retrieval.py; backend/tests/test_retrieval_demo.py; output/retrieval-demo-20261109/scaffold.json; output/retrieval-demo-20261109/complete.json; pre-deploy audit Actions 42551685730"
+}
+```
+
+
+### 2026-11-09 课程页面字体统一
+
+共享页面样式调整：沿用全站无衬线字体，课程标题桌面32px/手机28px，内容标题18px、正文与表单14px、辅助文字12px。仅视觉调整，不改变本模块接口、状态或数据流，不代表业务实现完成。
+
+```acceptance-record
+{
+  "commit": "8607c29",
+  "command": "gh run view 42578102031 --repo vacontinuejatotired/CS-Career-Guide; node --test frontend/tests/*.test.mjs; node frontend/node_modules/vite/bin/vite.js build (cwd=frontend)",
+  "result": "failed",
+  "environment": "2026-11-09；Windows 本地隔离浏览器及 GitHub Actions",
+  "scope": "仅课程页面字体样式。前端78项与生产构建通过；浏览器1440/390px检查五个课程入口和个人中心、简历页，共14视图无横向溢出或JS运行异常。Actions前端检查及镜像构建成功，但共享组件变更缺实施文档导致总门禁失败。",
+  "limitations": "五模块正式业务未完成，未宣称complete通过；本轮完整业务重跑因WSL互操作失败未启动。浏览器使用隔离模拟API，仅初始页面，不覆盖检索结果和全部失败状态。用户已授权半成品演示上线；仅按既有手动流程发布前端，不修改门禁、不部署后端。线上结果另记。",
+  "evidence": "Actions 42578102031；output/playwright/typography-result.txt；frontend/src/features/career-platform/WorkspaceShell.vue；frontend/src/views/career-platform/Practice.vue"
+}
+```
+
+
+### 2026-11-09 课程导航统一
+
+五个课程入口共用CourseNav，保持名称、顺序、选中样式与顶部位置一致；自由模拟面试作为练习页辅助入口。内容轻量淡入，尊重减少动态效果设置；不改变本模块业务实现状态。
+
+```acceptance-record
+{
+  "commit": "66a5159 + dirty",
+  "command": "node --test frontend/tests/*.test.mjs; vite build; playwright-cli run-code --filename output/playwright/course-nav-check.js",
+  "result": "passed",
+  "environment": "2026-11-09；Windows；本地隔离模拟API与Chromium",
+  "scope": "仅统一课程导航和切换样式。78项前端测试、生产构建通过；1440/390px各点击五个入口，共10次切换均为同名同序五项导航、一个当前项、无横向溢出，导航纵向位置同尺寸一致；减少动态效果时动画为none。",
+  "limitations": "不改变五模块正式业务、API、鉴权或数据；passed仅指此次前端专项，不代表五模块complete成功。未调用真实模型；线上发布及服务器运行版本另验收。用户要求验证后直接上线，仅发布前端，沿用既有半成品演示发布流程，不修改门禁。",
+  "evidence": "output/playwright/course-nav-tests.log；output/playwright/course-nav-build.log；output/playwright/course-nav-check.js；output/playwright/course-nav-1440.png；output/playwright/course-nav-390.png"
+}
+```
+
+### 2026-11-09 成员2 实现：question 任务的评估运行、查询与导出
+
+本轮实现 `question` 任务的离线评估闭环：`evaluation/metrics.py`（纯函数指标）、`evaluation/datasets.py`（版本化冻结评估集与指纹）、`evaluation/strategies.py`（复用成员4 `TextRetrievalStrategy` 的排序适配器）、`evaluation/service.py`（运行/列表/详情/导出）和 `Evaluation.vue`（真实结果、逐例证据与导出）。未修改共享文件（contracts/serializers/composition/api/urls/migrations/固定测试）与 `views/evaluation.py`：输入校验、staff 鉴权、跨用户 404 仍由既有平台层提供。
+
+**数据**：`evaluation/datasets/java-corpus-v1.json` 是 20 道团队自编 Java 后端题（Java基础 3、集合 4、JVM 3、并发 4、数据库 3、Spring 3）；`java-eval-dev-v1.json`（9 条相关 query + 1 条无关检测）只用于选参数；`java-eval-test-v1.json`（12 条相关 query + 2 条无关检测）冻结后只用于报告结论。加载时返回深拷贝，并记录规范化 JSON 的 SHA-256；落库参数中保存 `dataset_sha256` 与 `corpus_version`，供复现。查询采用口语化问法，避免与题面逐字重合。
+
+**行为**：
+
+- POST `evaluation-runs/`：参数白名单仅 `k`（1-20，默认 5）；未登记数据集、未注册策略或未知参数一律 400 且零写入；`(user,request_id)` 同输入返回原记录，同键不同输入 409；成功记录 `status=succeeded`、`model_version=offline-text-v1`。
+- GET 列表/详情/导出：只读同一条记录，导出不重跑策略；导出额外携带 `contract_version`、`exported_at` 与 `groups`。
+- 指标：Precision 分母固定为 K（空位算未命中）；重复预测 ID 只计一次；相关集为空的样本归入无关检测组，不计入宏平均，仍逐例保存诊断。
+- 策略异常只记录异常类型，不回显供应商异常内容；全部样本失败时返回 503 且不落库。
+
+**实验记录（本地隔离 SQLite，离线文本策略，无真实模型、无 Embedding）**：
+
+| 阶段 | 集合 | 策略 | K | Precision@K | Recall@K | F1@K | HitRate@K | MRR |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 基线 | dev | text-baseline | 5 | 0.222 | 0.889 | 0.349 | 0.889 | 0.806 |
+| 对照 | dev | text-balanced | 5 | 0.222 | 0.889 | 0.349 | 0.889 | 0.806 |
+| 基线 | test | text-baseline | 5 | 0.217 | 1.000 | 0.353 | 1.000 | 0.799 |
+| 对照 | test | text-balanced | 5 | 0.217 | 1.000 | 0.353 | 1.000 | 0.896 |
+
+Top-K 单变量扫描（text-baseline，其余参数不变）：dev 在 K=3/5/10 的 F1@K 为 0.456/0.349/0.195，test 为 0.483/0.353/0.194；K 越小精确率越高、召回越差（test 的 Recall 从 K=5 的 1.000 降到 K=3 的 0.917）。
+
+**结论与未采用的方案**：
+
+1. 均衡权重变体在 dev 上与基线完全一致，在 test 上只改变了个别 query 的首命中名次（MRR 0.799→0.896），不足以作为调优收益，因此**默认策略仍为 `text-baseline`**，`text-balanced` 仅保留为对照候选。
+2. 阈值方案已试但未采用：把 `min_score` 提到 0.12 后，dev 召回从 0.889 降到 0.278、test 从 1.000 降到 0.500——当前语料与 query 规模下词面匹配分数分布很窄，阈值会同时砍掉有效召回。
+3. 无关检测组仍误召：dev 的 1 条与 test 的 2 条无关 query 分别返回 2/2/5 条弱相关候选，说明纯词面匹配缺少可靠的相关性下限；建议语料扩大后用阈值扫描或成员4的重排解决，而不是在本模块伪造过滤阈值。
+
+**已知限制**：
+
+- 仅注册 `question` 任务策略；`job`、`resume` 任务的评估策略需要成员1/3 的正式服务，当前请求返回 400 而非空基线。
+- 全部样本失败时的 503 路径：共享 `api.py` 的错误码映射没有 503，响应信封 `code` 为 `REQUEST_FAILED`；补齐需集成人审核共享契约。
+- 未接 MySQL runner、真实 Embedding、真实模型与浏览器端到端；页面外框 `WorkspaceShell` 的“开发骨架 · 功能待实现”标签属共享组件，本模块未修改。
+
+```acceptance-record
+{
+  "commit": "30f3137 + dirty",
+  "command": "python ci/project_acceptance.py --stage scaffold; python ci/project_acceptance.py --stage complete --module evaluation; python -m django test career_platform.evaluation.tests_metrics --settings=career_platform.test_settings; python -m unittest discover -s ci -p 'test_project*.py'; node --test frontend/tests/*.test.mjs; npm run build --prefix frontend",
+  "result": "passed",
+  "environment": "2026-11-09；Windows；Python 3.12.10 + Django 4.2.7；隔离内存 SQLite；PLATFORM_TEST_MYSQL 未设置；Node 24.20.0",
+  "scope": "question 任务评估闭环：指标与数据集边界单元测试 11 项通过；骨架 7 项通过；固定 evaluation 验收 3 项通过（指标可复现与幂等复用、导出与详情指标一致、未知数据集 400 且零写入、非管理员 403、无关预测五项指标为 0）；ci 目录 project 单元测试 11 项通过；前端 78 项与生产构建通过。另以本地隔离 SQLite 经 API 实跑 dev/test 两套评估集共 4 条记录：列表/详情/导出一致，同 request_id 复用原记录，同键改 K 返回 409，未登记数据集/未注册策略/未知参数均 400 且不落库。",
+  "limitations": "仅离线文本策略，未调用真实模型或 Embedding；job、resume 任务未注册策略（依赖成员1/3 正式服务）；无关检测组仍有 2/2/5 条误召且未启用相关性阈值；全部样本失败时的 503 信封 code 为 REQUEST_FAILED（共享 api.py 未映射 503）；页面外框阶段标签属共享组件未改；未跑 MySQL runner、远端 CI、浏览器端到端与发布。",
+  "evidence": "output/scaffold.json; output/evaluation.json; backend/career_platform/evaluation/tests_metrics.py; backend/career_platform/evaluation/datasets/"
 }
 ```
