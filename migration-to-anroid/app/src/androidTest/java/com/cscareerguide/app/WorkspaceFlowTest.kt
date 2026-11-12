@@ -1,0 +1,93 @@
+package com.cscareerguide.app
+
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextInput
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.Assert.assertTrue
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+
+@RunWith(AndroidJUnit4::class)
+class WorkspaceFlowTest {
+    @get:Rule
+    val composeRule = createAndroidComposeRule<MainActivity>()
+
+    @Test
+    fun userCanOpenAllPhaseFourPagesAndEditProfile() {
+        login()
+
+        composeRule.onNodeWithTag("tab_profile").performClick()
+        waitForTag("screen_profile")
+        composeRule.onNodeWithTag("profile_edit").performClick()
+        assertTrue(
+            composeRule.onAllNodesWithText("编辑个人资料")
+                .fetchSemanticsNodes()
+                .isNotEmpty(),
+        )
+        composeRule.onNodeWithTag("profile_save").performClick()
+        waitForTag("screen_profile")
+
+        composeRule.onNodeWithText("练习记录 · 3")
+            .performScrollTo()
+            .performClick()
+        waitForTag("screen_platform_records")
+
+        clickCourse("course_catalog")
+        waitForTag("screen_platform_catalog")
+        composeRule.onNodeWithTag("catalog_kind_questions").performClick()
+        composeRule.onNodeWithTag("catalog_search").performScrollTo().performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000) {
+            composeRule.onAllNodesWithText("题库列表")
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
+
+        clickCourse("course_resume")
+        waitForTag("screen_platform_resume")
+        composeRule.onNodeWithTag("resume_optimization_jd")
+            .performScrollTo()
+            .performTextInput("要求掌握 Java 和 Spring Boot。")
+        composeRule.onNodeWithTag("resume_optimization_analyze")
+            .performScrollTo()
+            .performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000) {
+            composeRule.onAllNodesWithText("原文、证据与修改建议")
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
+
+        clickCourse("course_practice")
+        waitForTag("screen_platform_practice")
+        composeRule.onNodeWithTag("practice_preset_basic").performScrollTo().performClick()
+
+        clickCourse("course_records")
+        waitForTag("screen_platform_records")
+
+        clickCourse("course_evaluation")
+        waitForTag("screen_platform_evaluation")
+    }
+
+    private fun login() {
+        composeRule.onNodeWithTag("login_username").performTextInput("student")
+        composeRule.onNodeWithTag("login_password").performTextInput("123456")
+        composeRule.onNodeWithTag("login_submit").performScrollTo().performClick()
+        waitForTag("screen_home")
+    }
+
+    private fun waitForTag(tag: String) {
+        composeRule.waitUntil(timeoutMillis = 5_000) {
+            composeRule.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
+        }
+    }
+
+    private fun clickCourse(tag: String) {
+        composeRule.onNodeWithTag(tag).performScrollTo().performClick()
+    }
+}
