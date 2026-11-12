@@ -27,6 +27,7 @@
 | --- | --- |
 | [当前需求方案与五人分工](docs/career_platform_plan.md) | 唯一有效的需求与分工依据；制定实施计划、拆分模块及约定接口前先读，内容是待开发目标 |
 | [统一登录门槛](docs/authentication-gate.md) | 前端路由与后端鉴权、Token 行为、隔离测试 |
+| [App 端 API 接入文档](docs/app-api.md) | App 复用接口、请求/响应、Token、SSE、上传、练习幂等与当前实现限制 |
 | [模拟面试重构](docs/interview-refactor.md) | legacy 主链路、交互与简历观览；ASR/TTS 和浏览器录音的验收边界 |
 
 新业务模块有独立接口、数据模型或流程约定时，在 docs 下增加短文档并补到本表。需求提案和实现说明分别标注，未提交的个人草稿不作为团队事实来源。
