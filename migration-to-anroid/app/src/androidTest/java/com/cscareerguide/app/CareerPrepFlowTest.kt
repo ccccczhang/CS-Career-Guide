@@ -7,6 +7,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.printToLog
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -19,7 +20,7 @@ class CareerPrepFlowTest {
     val composeRule = createAndroidComposeRule<MainActivity>()
 
     @Test
-    fun userCanBrowseJobsOpenResumeAndFinishAMockInterview() {
+    fun userCanBrowseJobsOpenResumeAndFinishARealInterview() {
         login()
 
         composeRule.onNodeWithTag("tab_career").performClick()
@@ -42,18 +43,32 @@ class CareerPrepFlowTest {
         waitForTag("screen_interview")
         composeRule.onNodeWithTag("interview_start").performScrollTo().performClick()
         waitForTag("interview_timer")
-        composeRule.waitUntil(timeoutMillis = 5_000) {
-            composeRule.onAllNodesWithText("面试官")
+        composeRule.waitUntil(timeoutMillis = 60_000) {
+            composeRule.onAllNodesWithTag("interview_message_interviewer")
                 .fetchSemanticsNodes()
-                .isNotEmpty()
+                .isNotEmpty() &&
+                composeRule.onAllNodesWithText("面试官正在组织问题…")
+                    .fetchSemanticsNodes()
+                    .isEmpty()
         }
 
         composeRule.onNodeWithTag("interview_finish").performScrollTo().performClick()
-        composeRule.waitUntil(timeoutMillis = 5_000) {
+        composeRule.waitUntil(timeoutMillis = 120_000) {
             composeRule.onAllNodesWithText("面试复盘 · 技术面")
                 .fetchSemanticsNodes()
-                .isNotEmpty()
+                .isNotEmpty() ||
+                composeRule.onAllNodesWithTag("interview_error")
+                    .fetchSemanticsNodes()
+                    .isNotEmpty()
         }
+        if (composeRule.onAllNodesWithTag("interview_error").fetchSemanticsNodes().isNotEmpty()) {
+            composeRule.onNodeWithTag("interview_error").printToLog("INTERVIEW_ERROR")
+        }
+        assertTrue(
+            composeRule.onAllNodesWithText("面试复盘 · 技术面")
+                .fetchSemanticsNodes()
+                .isNotEmpty(),
+        )
     }
 
     private fun login() {

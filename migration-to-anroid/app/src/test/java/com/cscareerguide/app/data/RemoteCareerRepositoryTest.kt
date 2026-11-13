@@ -5,6 +5,9 @@ import com.cscareerguide.app.data.bridge.BridgeError
 import com.cscareerguide.app.data.bridge.BridgeResult
 import com.cscareerguide.app.data.bridge.CatalogBridgeQuery
 import com.cscareerguide.app.data.bridge.CareerBridge
+import com.cscareerguide.app.data.bridge.InterviewChatRequest
+import com.cscareerguide.app.data.bridge.InterviewStreamEvent
+import com.cscareerguide.app.data.bridge.InterviewStreamResult
 import com.cscareerguide.app.data.bridge.PracticeRetrieveRequest
 import com.cscareerguide.app.data.bridge.ProfileUpdate
 import com.cscareerguide.app.data.bridge.ResumeAnalysisRequest
@@ -204,10 +207,9 @@ class RemoteCareerRepositoryTest {
         override suspend fun listPracticeSessions(): BridgeResult<Unit> = pending()
         override suspend fun listEvaluationRuns(): BridgeResult<Unit> = pending()
         override suspend fun streamInterviewChat(
-            sessionId: String,
-            message: String,
-            onEvent: (String) -> Unit,
-        ): BridgeResult<Unit> = pending()
+            request: InterviewChatRequest,
+            onEvent: (InterviewStreamEvent) -> Unit,
+        ): BridgeResult<InterviewStreamResult> = pending()
 
         private fun user(username: String) = UserProfile(
             id = "1",

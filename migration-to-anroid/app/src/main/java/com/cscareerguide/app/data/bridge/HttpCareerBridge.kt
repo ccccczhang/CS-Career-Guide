@@ -10,6 +10,7 @@ import com.cscareerguide.app.data.model.SeniorAdvice
 import com.cscareerguide.app.data.model.UserProfile
 import com.cscareerguide.app.data.session.AuthSessionStore
 import java.io.IOException
+import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.SerializationException
@@ -41,6 +42,11 @@ class HttpCareerBridge(
     private val json: Json = Json { ignoreUnknownKeys = true },
 ) : CareerBridge {
     private val baseUrl: HttpUrl? = validateBaseUrl(apiBaseUrl, allowCleartext)
+    private val streamingClient = client.newBuilder()
+        .callTimeout(0, TimeUnit.MILLISECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .build()
     private val configurationError = if (baseUrl == null) {
         if (apiBaseUrl.isBlank()) {
             "API_BASE_URL 未配置。"
@@ -294,10 +300,145 @@ class HttpCareerBridge(
         notImplemented(BridgeRoutes.EVALUATION_RUNS)
 
     override suspend fun streamInterviewChat(
-        sessionId: String,
-        message: String,
-        onEvent: (String) -> Unit,
-    ): BridgeResult<Unit> = notImplemented(BridgeRoutes.INTERVIEW_CHAT)
+        request: InterviewChatRequest,
+        onEvent: (InterviewStreamEvent) -> Unit,
+    ): BridgeResult<InterviewStreamResult> {
+        val root = baseUrl ?: return BridgeResult.NotConfigured(configurationError ?: BridgeRoutes.INTERVIEW_CHAT)
+        val token = sessionStore.token()
+            ?: return authenticationRequired(BridgeRoutes.INTERVIEW_CHAT)
+        val body = buildJsonObject {
+            put("message", request.message)
+            put("mode", request.mode)
+            put("interview_style", request.style)
+            put("session_id", request.sessionId)
+            put("enable_tts", request.enableTts)
+        }.toString().toRequestBody(JSON_MEDIA_TYPE)
+        val url = root.resolve(BridgeRoutes.INTERVIEW_CHAT)
+            ?: return configurationFailure(BridgeRoutes.INTERVIEW_CHAT)
+        val httpRequest = Request.Builder()
+            .url(url)
+            .header("Accept", "text/event-stream")
+            .header("Authorization", "Token $token")
+            .post(body)
+            .build()
+        return executeInterviewStream(httpRequest, BridgeRoutes.INTERVIEW_CHAT, onEvent)
+    }
+
+    private suspend fun executeInterviewStream(
+        request: Request,
+        route: String,
+        onEvent: (InterviewStreamEvent) -> Unit,
+    ): BridgeResult<InterviewStreamResult> = suspendCancellableCoroutine { continuation ->
+        val call = streamingClient.newCall(request)
+        continuation.invokeOnCancellation { call.cancel() }
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                if (!continuation.isActive) return
+                continuation.resume(
+                    BridgeResult.Failure(
+                        route,
+                        BridgeError(
+                            httpStatus = null,
+                            businessCode = null,
+                            message = "面试流连接失败，请稍后重试。",
+                            details = null,
+                            fieldErrors = emptyMap(),
+                            retryable = true,
+                            authExpired = false,
+                        ),
+                    ),
+                )
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                if (!continuation.isActive) {
+                    response.close()
+                    return
+                }
+                response.use {
+                    if (!it.isSuccessful) {
+                        val text = runCatching { it.body?.string().orEmpty() }.getOrElse { "" }
+                        if (it.code == 401) sessionStore.clear()
+                        continuation.resume(
+                            BridgeResult.Failure(route, parseHttpError(it.code, text)),
+                        )
+                        return
+                    }
+                    val body = it.body ?: run {
+                        continuation.resume(incompleteStreamFailure(route, "面试响应没有数据流。"))
+                        return
+                    }
+                    val parsed = runCatching {
+                        parseInterviewSse(body.source(), json, onEvent)
+                    }.getOrElse { error ->
+                        continuation.resume(
+                            incompleteStreamFailure(
+                                route,
+                                if (error is IOException) {
+                                    "面试流读取中断，请稍后重试。"
+                                } else {
+                                    "面试流响应无法解析。"
+                                },
+                            ),
+                        )
+                        return
+                    }
+                    val failureMessage = when {
+                        parsed.serverError != null -> parsed.serverError
+                        !parsed.receivedData -> "面试接口未返回流式数据。"
+                        !parsed.done || !parsed.ended ->
+                            "面试流未完整结束，已保留收到的文字。"
+                        else -> null
+                    }
+                    if (failureMessage != null) {
+                        continuation.resume(
+                            BridgeResult.Failure(
+                                route,
+                                BridgeError(
+                                    httpStatus = it.code,
+                                    businessCode = if (parsed.serverError != null) {
+                                        "INTERVIEW_STREAM_ERROR"
+                                    } else {
+                                        "INTERVIEW_STREAM_INCOMPLETE"
+                                    },
+                                    message = failureMessage,
+                                    details = null,
+                                    fieldErrors = emptyMap(),
+                                    retryable = true,
+                                    authExpired = false,
+                                ),
+                            ),
+                        )
+                    } else {
+                        continuation.resume(
+                            BridgeResult.Success(
+                                InterviewStreamResult(
+                                    content = parsed.content,
+                                    sessionId = parsed.sessionId,
+                                    done = parsed.done,
+                                    ended = parsed.ended,
+                                ),
+                            ),
+                        )
+                    }
+                }
+            }
+        })
+    }
+
+    private fun incompleteStreamFailure(route: String, message: String): BridgeResult<Nothing> =
+        BridgeResult.Failure(
+            route,
+            BridgeError(
+                httpStatus = 200,
+                businessCode = "INTERVIEW_STREAM_INCOMPLETE",
+                message = message,
+                details = null,
+                fieldErrors = emptyMap(),
+                retryable = true,
+                authExpired = false,
+            ),
+        )
 
     private suspend fun <T> request(
         route: String,

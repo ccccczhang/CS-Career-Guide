@@ -103,6 +103,7 @@ class CareerPrepViewModelTest {
 
         assertFalse(viewModel.interviewState.value.isRunning)
         assertNotNull(viewModel.interviewState.value.review)
-        assertEquals(78, viewModel.interviewState.value.review?.score)
+        assertEquals(0, viewModel.interviewState.value.review?.score)
+        assertTrue(viewModel.interviewState.value.review?.summary.orEmpty().contains("面试表现"))
     }
 }

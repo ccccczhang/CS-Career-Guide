@@ -5,6 +5,8 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.cscareerguide.app.data.AppRepository
 import com.cscareerguide.app.data.AppResult
+import com.cscareerguide.app.data.bridge.InterviewChatRequest
+import com.cscareerguide.app.data.bridge.InterviewStreamEvent
 import com.cscareerguide.app.data.model.CompanyRanking
 import com.cscareerguide.app.data.model.InterviewMessage
 import com.cscareerguide.app.data.model.InterviewReview
@@ -24,6 +26,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.util.UUID
 
 enum class HuntingTab(val label: String) {
     JOBS("职位"),
@@ -104,6 +107,9 @@ data class InterviewUiState(
     val voiceMockEnabled: Boolean = false,
     val review: InterviewReview? = null,
     val reviewLoading: Boolean = false,
+    val sessionId: String = "",
+    val error: String? = null,
+    val reviewProgress: String = "",
 )
 
 class CareerPrepViewModel(
@@ -346,6 +352,7 @@ class CareerPrepViewModel(
         val current = _interviewState.value
         if (current.isRunning) return
         interviewJob?.cancel()
+        val messageId = "interviewer-${UUID.randomUUID()}"
         _interviewState.update {
             it.copy(
                 isRunning = true,
@@ -355,11 +362,24 @@ class CareerPrepViewModel(
                 messages = emptyList(),
                 review = null,
                 reviewLoading = false,
+                sessionId = "",
+                error = null,
+                reviewProgress = "",
             )
         }
         interviewJob = viewModelScope.launch {
-            delay(mockDelayMillis)
-            appendInterviewerMessage(firstQuestion(_interviewState.value.styleId))
+            val style = _interviewState.value.styleId
+            runInterviewStream(
+                request = InterviewChatRequest(
+                    message = interviewStartPrompt(
+                        style = style,
+                        durationMinutes = _interviewState.value.durationMinutes,
+                    ),
+                    style = style,
+                    enableTts = false,
+                ),
+                interviewerMessageId = messageId,
+            )
         }
     }
 
@@ -367,31 +387,46 @@ class CareerPrepViewModel(
         val current = _interviewState.value
         val content = answer.trim()
         if (content.isBlank() || current.isLoading || current.isPaused || !current.isRunning) return
+        if (current.sessionId.isBlank()) {
+            _interviewState.update { it.copy(error = "尚未取得面试会话 ID，请重新开始面试。") }
+            return
+        }
         val userMessage = InterviewMessage(
-            id = "message-${current.messages.size + 1}",
+            id = "user-${UUID.randomUUID()}",
             speaker = InterviewSpeaker.USER,
             content = content,
         )
+        val messageId = "interviewer-${UUID.randomUUID()}"
         _interviewState.update {
-            it.copy(messages = it.messages + userMessage, isLoading = true)
+            it.copy(messages = it.messages + userMessage, isLoading = true, error = null)
         }
         interviewJob?.cancel()
         interviewJob = viewModelScope.launch {
-            delay(mockDelayMillis)
-            val followUp = when ((_interviewState.value.messages.size - 1) % 4) {
-                1 -> "你提到了项目中的技术选择。请说明当时比较过哪些方案，以及为什么最终选择现在的实现。"
-                2 -> "这个项目最终解决了什么具体问题？请给出一个可验证的结果或测试方式。"
-                3 -> "如果流量增长十倍，原来的设计最可能先出现什么问题？你会怎样定位？"
-                else -> "最后，用一分钟概括你的优势，并说明它与目标岗位的关系。"
-            }
-            appendInterviewerMessage(followUp)
+            runInterviewStream(
+                request = InterviewChatRequest(
+                    message = interviewAnswerPrompt(content, _interviewState.value.styleId),
+                    style = _interviewState.value.styleId,
+                    sessionId = _interviewState.value.sessionId,
+                    enableTts = false,
+                ),
+                interviewerMessageId = messageId,
+            )
         }
     }
 
     fun pauseInterview() {
         val current = _interviewState.value
         if (!current.isRunning) return
-        _interviewState.update { it.copy(isPaused = !it.isPaused) }
+        if (!current.isPaused) {
+            interviewJob?.cancel()
+            interviewJob = null
+        }
+        _interviewState.update {
+            it.copy(
+                isPaused = !it.isPaused,
+                isLoading = if (it.isPaused) false else it.isLoading,
+            )
+        }
     }
 
     fun tickInterviewClock() {
@@ -408,21 +443,94 @@ class CareerPrepViewModel(
         val current = _interviewState.value
         if (!current.isRunning && current.review != null) return
         interviewJob?.cancel()
+        val conversation = current.messages.joinToString("\n") { message ->
+            val speaker = if (message.speaker == InterviewSpeaker.INTERVIEWER) "面试官" else "面试者"
+            "$speaker：${message.content}"
+        }
+        if (conversation.length < 50) {
+            _interviewState.update {
+                it.copy(
+                    isRunning = false,
+                    isPaused = false,
+                    isLoading = false,
+                    reviewLoading = false,
+                    error = "面试对话内容不足，无法生成复盘。",
+                )
+            }
+            return
+        }
+        if (current.sessionId.isBlank()) {
+            _interviewState.update {
+                it.copy(
+                    isRunning = false,
+                    isPaused = false,
+                    isLoading = false,
+                    reviewLoading = false,
+                    error = "缺少面试会话 ID，无法生成复盘。",
+                )
+            }
+            return
+        }
         _interviewState.update {
             it.copy(
                 isRunning = false,
                 isPaused = false,
                 isLoading = false,
                 reviewLoading = true,
+                error = null,
+                reviewProgress = "",
             )
         }
         interviewJob = viewModelScope.launch {
-            delay(mockDelayMillis)
-            _interviewState.update {
-                it.copy(
-                    reviewLoading = false,
-                    review = repository.interviewReview(it.styleId),
-                )
+            when (
+                val result = repository.streamInterviewChat(
+                    InterviewChatRequest(
+                        message = interviewReviewPrompt(conversation, current.styleId),
+                        mode = "interview_review",
+                        style = current.styleId,
+                        sessionId = current.sessionId,
+                        enableTts = false,
+                    ),
+                ) { event ->
+                    viewModelScope.launch {
+                        if (event is InterviewStreamEvent.Chunk) {
+                            _interviewState.update {
+                                it.copy(reviewProgress = it.reviewProgress + event.content)
+                            }
+                        }
+                    }
+                }
+            ) {
+                is AppResult.Success -> {
+                    val content = result.value.content.ifBlank {
+                        _interviewState.value.reviewProgress
+                    }
+                    _interviewState.update {
+                        it.copy(
+                            reviewLoading = false,
+                            review = content.takeIf(String::isNotBlank)?.let { review ->
+                                InterviewReview(
+                                    id = result.value.sessionId ?: it.sessionId,
+                                    style = it.styleId,
+                                    score = 0,
+                                    summary = review,
+                                    strengths = emptyList(),
+                                    improvements = emptyList(),
+                                    nextActions = emptyList(),
+                                )
+                            },
+                            error = if (content.isBlank()) "未获取到复盘内容。" else null,
+                        )
+                    }
+                }
+                is AppResult.Failure -> {
+                    _interviewState.update {
+                        it.copy(
+                            reviewLoading = false,
+                            error = result.error.message,
+                        )
+                    }
+                }
             }
         }
     }
@@ -437,6 +545,9 @@ class CareerPrepViewModel(
                 messages = emptyList(),
                 review = null,
                 reviewLoading = false,
+                sessionId = "",
+                error = null,
+                reviewProgress = "",
                 remainingSeconds = it.durationMinutes * 60,
             )
         }
@@ -521,24 +632,142 @@ class CareerPrepViewModel(
         }
     }
 
-    private fun appendInterviewerMessage(content: String) {
-        _interviewState.update {
-            it.copy(
-                messages = it.messages + InterviewMessage(
-                    id = "message-${it.messages.size + 1}",
-                    speaker = InterviewSpeaker.INTERVIEWER,
-                    content = content,
-                ),
-                isLoading = false,
+    private suspend fun runInterviewStream(
+        request: InterviewChatRequest,
+        interviewerMessageId: String,
+    ) {
+        when (
+            val result = repository.streamInterviewChat(request) { event ->
+                viewModelScope.launch {
+                    when (event) {
+                        is InterviewStreamEvent.Chunk ->
+                            appendInterviewerChunk(interviewerMessageId, event.content)
+                        is InterviewStreamEvent.Session ->
+                            _interviewState.update { it.copy(sessionId = event.sessionId) }
+                        is InterviewStreamEvent.ServerError ->
+                            _interviewState.update { it.copy(error = event.message) }
+                        is InterviewStreamEvent.Audio,
+                        InterviewStreamEvent.Done -> Unit
+                    }
+                }
+            }
+        ) {
+            is AppResult.Success -> {
+                _interviewState.update {
+                    it.copy(
+                        isLoading = false,
+                        sessionId = result.value.sessionId ?: it.sessionId,
+                        error = null,
+                    )
+                }
+            }
+            is AppResult.Failure -> {
+                _interviewState.update {
+                    it.copy(
+                        isLoading = false,
+                        error = result.error.message,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun appendInterviewerChunk(messageId: String, delta: String) {
+        if (delta.isEmpty()) return
+        _interviewState.update { state ->
+            val existing = state.messages.indexOfFirst { it.id == messageId }
+            if (existing >= 0) {
+                val messages = state.messages.toMutableList()
+                val message = messages[existing]
+                messages[existing] = message.copy(content = message.content + delta)
+                state.copy(messages = messages)
+            } else {
+                state.copy(
+                    messages = state.messages + InterviewMessage(
+                        id = messageId,
+                        speaker = InterviewSpeaker.INTERVIEWER,
+                        content = delta,
+                    ),
+                )
+            }
+        }
+    }
+
+    private fun interviewStartPrompt(style: String, durationMinutes: Int): String {
+        val resume = formatResumePrompt(_resumeState.value.draft)
+        return buildString {
+            append(
+                "【面试模式】你是一位${interviewStyleDescription(style)}面试官。" +
+                    "请开始一场${durationMinutes}分钟的面试。",
+            )
+            if (resume.isNotBlank()) {
+                append("\n\n【面试者简历信息】\n")
+                append(resume)
+                append("\n\n请根据以上简历信息，提出针对性的面试问题。")
+            }
+            append(
+                "\n\n要求：\n" +
+                    "1. 首先进行简短的自我介绍，说明你是面试官和面试风格\n" +
+                    "2. 然后提出第一个面试问题\n" +
+                    "3. 全程只扮演面试官\n" +
+                    "4. 根据回答提出下一个相关问题\n" +
+                    "5. 保持${interviewStyleDescription(style)}的风格\n\n现在开始面试。",
             )
         }
     }
 
-    private fun firstQuestion(styleId: String): String = when (styleId) {
-        "gentle" -> "先不用紧张。请从最近一个项目开始，说明你负责了哪一部分。"
-        "pressure" -> "请在一分钟内说明你的项目目标、关键难点和可验证结果。不要泛泛介绍。"
-        "behavioral" -> "请讲一次你和同伴对方案有分歧的经历，重点说明你如何处理并推动结果。"
-        else -> "请选择一个你最有代表性的项目，说明技术栈、你的职责和最难处理的问题。"
+    private fun interviewAnswerPrompt(answer: String, style: String): String =
+        "【面试模式】用户的回答是：\"$answer\"\n\n" +
+            "作为${interviewStyleDescription(style)}面试官，请：\n" +
+            "1. 简要评价用户的回答（可选）\n" +
+            "2. 提出下一个面试问题\n\n" +
+            "你只需扮演面试官角色，不要查询任何数据库信息。"
+
+    private fun interviewReviewPrompt(conversation: String, style: String): String =
+        "【面试复盘模式】请对以下面试过程进行复盘，并提供改进建议。\n\n" +
+            "面试风格：${interviewStyleDescription(style)}\n\n" +
+            "对话记录：\n$conversation\n\n" +
+            "请提供：\n1. 面试表现总结\n2. 回答优点\n3. 需要改进的地方\n4. 具体改进建议\n5. 下次准备建议"
+
+    private fun formatResumePrompt(resume: ResumeDraft): String = buildString {
+        if (resume.name.isNotBlank()) append("姓名：${resume.name}\n")
+        if (resume.targetPosition.isNotBlank()) append("意向岗位：${resume.targetPosition}\n")
+        if (resume.selfEvaluation.isNotBlank()) append("个人自评：${resume.selfEvaluation}\n")
+        if (resume.skills.isNotBlank()) append("专业技能：${resume.skills}\n")
+        if (resume.education.isNotEmpty()) {
+            append("教育背景：\n")
+            resume.education.filter { it.school.isNotBlank() }.forEach {
+                append("- ${it.school} ${it.major} ${it.degree} ${it.period}\n")
+            }
+        }
+        if (resume.experience.isNotEmpty()) {
+            append("实习经历：\n")
+            resume.experience.filter { it.company.isNotBlank() }.forEach {
+                append("- ${it.company} ${it.position} ${it.period}\n")
+                if (it.description.isNotBlank()) append("  ${it.description}\n")
+            }
+        }
+        if (resume.projects.isNotEmpty()) {
+            append("项目经验：\n")
+            resume.projects.filter { it.name.isNotBlank() }.forEach {
+                append("- ${it.name} ${it.role} ${it.period}\n")
+                if (it.description.isNotBlank()) append("  ${it.description}\n")
+            }
+        }
+        if (resume.certificates.isNotEmpty()) {
+            append("证书认证：\n")
+            resume.certificates.filter { it.name.isNotBlank() }.forEach {
+                append("- ${it.name} ${it.issuer} ${it.period}\n")
+            }
+        }
+    }.trim()
+
+    private fun interviewStyleDescription(style: String): String = when (style) {
+        "gentle" -> "温和友好的"
+        "pressure" -> "压力型"
+        "technical" -> "技术导向的"
+        "behavioral" -> "行为面试"
+        else -> "专业的"
     }
 
     private fun updateResume(transform: (ResumeDraft) -> ResumeDraft) {

@@ -1,6 +1,9 @@
 package com.cscareerguide.app.data
 
 import com.cscareerguide.app.data.bridge.BridgeError
+import com.cscareerguide.app.data.bridge.InterviewChatRequest
+import com.cscareerguide.app.data.bridge.InterviewStreamEvent
+import com.cscareerguide.app.data.bridge.InterviewStreamResult
 import com.cscareerguide.app.data.bridge.PracticeRetrieveRequest
 import com.cscareerguide.app.data.model.CareerPathSummary
 import com.cscareerguide.app.data.model.CareerCategory
@@ -74,6 +77,10 @@ interface AppRepository {
     suspend fun retrievePracticeQuestions(
         request: PracticeRetrieveRequest,
     ): AppResult<PracticeRetrieval>
+    suspend fun streamInterviewChat(
+        request: InterviewChatRequest,
+        onEvent: (InterviewStreamEvent) -> Unit,
+    ): AppResult<InterviewStreamResult>
     suspend fun analyzeResumeRemote(jdText: String, revision: Int, requestId: String): AppResult<Unit>
     suspend fun applyResumeAnalysisRemote(
         analysisId: String,

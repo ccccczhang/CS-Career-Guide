@@ -1,6 +1,9 @@
 package com.cscareerguide.app.data
 
 import com.cscareerguide.app.data.bridge.PracticeRetrieveRequest
+import com.cscareerguide.app.data.bridge.InterviewChatRequest
+import com.cscareerguide.app.data.bridge.InterviewStreamEvent
+import com.cscareerguide.app.data.bridge.InterviewStreamResult
 import com.cscareerguide.app.data.model.CareerPathSummary
 import com.cscareerguide.app.data.model.CareerCategory
 import com.cscareerguide.app.data.model.CareerPlanReport
@@ -292,6 +295,30 @@ class InMemoryMockRepository : AppRepository {
                 retrievalId = "mock-retrieval-${request.requestId}",
                 message = if (results.isEmpty()) "没有符合条件的题目，请调整条件。" else "",
                 results = results,
+            ),
+        )
+    }
+
+    override suspend fun streamInterviewChat(
+        request: InterviewChatRequest,
+        onEvent: (InterviewStreamEvent) -> Unit,
+    ): AppResult<InterviewStreamResult> {
+        val content = when {
+            request.mode == "interview_review" ->
+                "面试表现总体清晰。后续应补充技术取舍、验证结果和失败后的恢复方式。"
+            request.message.contains("用户的回答是") ->
+                "你提到了项目经历。请继续说明当时比较过哪些方案，以及为什么最终选择现在的实现。"
+            else -> "请先介绍你的技术栈，并选一个最熟悉的项目说明职责和结果。"
+        }
+        onEvent(InterviewStreamEvent.Chunk(content))
+        onEvent(InterviewStreamEvent.Done)
+        onEvent(InterviewStreamEvent.Session("mock-interview-session"))
+        return AppResult.Success(
+            InterviewStreamResult(
+                content = content,
+                sessionId = "mock-interview-session",
+                done = true,
+                ended = true,
             ),
         )
     }

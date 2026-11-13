@@ -147,6 +147,29 @@ data class PracticeRetrieveRequest(
     val requestId: String,
 )
 
+data class InterviewChatRequest(
+    val message: String,
+    val mode: String = "interview",
+    val style: String = "technical",
+    val sessionId: String = "",
+    val enableTts: Boolean = false,
+)
+
+sealed interface InterviewStreamEvent {
+    data class Chunk(val content: String) : InterviewStreamEvent
+    data class Audio(val base64: String) : InterviewStreamEvent
+    data class Session(val sessionId: String) : InterviewStreamEvent
+    data class ServerError(val message: String) : InterviewStreamEvent
+    data object Done : InterviewStreamEvent
+}
+
+data class InterviewStreamResult(
+    val content: String,
+    val sessionId: String?,
+    val done: Boolean,
+    val ended: Boolean,
+)
+
 /**
  * Adapter boundary for the real backend.
  *
@@ -207,10 +230,10 @@ interface CareerBridge {
     // TODO(bridge): enforce admin capability from server response; never infer is_staff from profile.
     suspend fun listEvaluationRuns(): BridgeResult<Unit>
 
-    // TODO(bridge): parse SSE frames and transport microphone PCM uploads separately.
     suspend fun streamInterviewChat(
-        sessionId: String,
-        message: String,
-        onEvent: (String) -> Unit,
-    ): BridgeResult<Unit>
+        request: InterviewChatRequest,
+        onEvent: (InterviewStreamEvent) -> Unit,
+    ): BridgeResult<InterviewStreamResult>
+
+    // TODO(bridge): transport microphone PCM uploads separately.
 }

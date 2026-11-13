@@ -5,6 +5,9 @@ import com.cscareerguide.app.data.bridge.BridgeError
 import com.cscareerguide.app.data.bridge.BridgeResult
 import com.cscareerguide.app.data.bridge.CatalogBridgeQuery
 import com.cscareerguide.app.data.bridge.CareerBridge
+import com.cscareerguide.app.data.bridge.InterviewChatRequest
+import com.cscareerguide.app.data.bridge.InterviewStreamEvent
+import com.cscareerguide.app.data.bridge.InterviewStreamResult
 import com.cscareerguide.app.data.bridge.PracticeRetrieveRequest
 import com.cscareerguide.app.data.bridge.ProfileUpdate
 import com.cscareerguide.app.data.bridge.ResumeAnalysisRequest
@@ -155,6 +158,12 @@ class RemoteCareerRepository(
     override suspend fun retrievePracticeQuestions(
         request: PracticeRetrieveRequest,
     ): AppResult<PracticeRetrieval> = mapBridgeResult(bridge.retrieveQuestions(request))
+
+    override suspend fun streamInterviewChat(
+        request: InterviewChatRequest,
+        onEvent: (InterviewStreamEvent) -> Unit,
+    ): AppResult<InterviewStreamResult> =
+        mapBridgeResult(bridge.streamInterviewChat(request, onEvent))
 
     override suspend fun analyzeResumeRemote(
         jdText: String,

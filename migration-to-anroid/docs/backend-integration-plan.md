@@ -6,7 +6,7 @@
 
 **交付边界**：[Android 桥接说明](bridge-integration.md)
 
-**当前状态**：阶段 1、2 完成；阶段 3 已接入正式题库 retrieve，创建练习会话待接入
+**当前状态**：阶段 1、2 完成，阶段 3 retrieve 已提交；阶段 4 文字 SSE 与复盘生成进行中
 
 ## 1. 当前配置约定
 
@@ -24,8 +24,8 @@
 | --- | --- | --- | --- |
 | 1. 基础设施与认证 | OkHttp、BuildConfig、错误模型、加密会话、登录/注册/profile/退出 | 完成 | MockWebServer、服务器登录/profile/logout、401 清理、退出清理和模拟器回归通过 |
 | 2. 简历、目录与查询 | 简历读取/保存、头像路由、目录分页筛选、岗位与学长建议查询、简历分析路由与待开发状态 | 完成 | 空库与错误分离；来源/权限/演示字段保留；保存成功刷新完整简历；501 不伪装成功 |
-| 3. 正式练习 | retrieve、创建会话、详情、回答、反馈恢复/重试、finish、总结重试、记录分页 | 进行中：retrieve 完成 | request_id 持久化，网络重发同键同内容，409/502/504 按详情恢复 |
-| 4. 面试、语音与剩余能力 | SSE、复盘、ASR PCM、TTS、职业推荐/规划/历史 | 待开始 | `[DONE]` 后继续读 `end`；断流/取消可观测；真实模型和语音只按服务器授权验证 |
+| 3. 正式练习 | retrieve、创建会话、详情、回答、反馈恢复/重试、finish、总结重试、记录分页 | retrieve 已提交，其余待接入 | request_id 持久化，网络重发同键同内容，409/502/504 按详情恢复 |
+| 4. 面试、语音与剩余能力 | SSE、复盘、ASR PCM、TTS、职业推荐/规划/历史 | 进行中：文字 SSE 与复盘生成 | `[DONE]` 后继续读 `end`；断流/取消可观测；真实模型和语音只按服务器授权验证 |
 | 5. 回归与发布 | 双账号隔离、模拟器、lint、Debug/Release 测试构建、证据汇总 | 待开始 | 单元、MockWebServer、服务器和模拟器通过；HTTP 明确标记为测试期 |
 
 ## 3. 阶段 1 记录
@@ -128,3 +128,24 @@
 
 - 专项 Android 导航测试 4 项通过，0 失败。
 - 全量 JVM 43 项、Android 10 项通过，0 失败；lint 0 error。
+
+## 7. 阶段 4 记录
+
+记录日期：2026-11-13。
+
+### 7.1 自由面试文字 SSE
+
+- 路由：`POST /api/ai/llm/chat/`，使用 `Authorization: Token <token>`、JSON 请求和 `Accept: text/event-stream`。
+- 请求：`message`、`mode`、`interview_style`、`session_id`、`enable_tts`。当前文字面试显式发送 `enable_tts=false`，不把语音开关冒充 TTS。
+- 解析：按空行分帧，按 UTF-8 增量解码；支持单帧跨网络块、一个网络块多帧、CRLF、多行 `data:` 和末尾残帧。
+- 完成：收到 `[DONE]` 后继续读取 `end`；只有 `[DONE]` 和带非空 `session_id` 的 `end` 都出现才判定完整。断流、缺少 `end` 或 error 帧保留已收到文字并显示可恢复失败。
+- 超时：普通请求继续使用短超时；SSE 使用独立客户端，读超时 120 秒、总调用不固定为 30 秒，协程取消会关闭 OkHttp Call。
+- ViewModel：开始面试和提交回答使用真实流；chunk 按顺序追加到同一面试官消息。暂停取消当前请求，不覆盖已收到的部分文本。
+- 复盘：结束面试后使用同一聊天接口的 `interview_review` 模式生成真实文字复盘；当前暂不展示后端结构化评分，也不调用旧 Mock 评分。
+
+验证结果：
+
+- JVM：45 项通过，0 失败；新增完整 SSE 和断流保留部分文本两项。完整 SSE 使用 MockWebServer 逐字节限速发送，覆盖中文 UTF-8 跨块、CRLF 和 `[DONE] -> end` 顺序。
+- 服务器短连通：HTTP 200、`text/event-stream; charset=utf-8`，收到 chunk、`[DONE]` 和非空 `session_id`；未收到 error 帧。
+- 模拟器：真实服务器完成开始面试、等待完整流结束和生成复盘，专项流程 1 项通过。
+- 语音输入、TTS 播放、复盘持久化、历史列表和 ASR 尚未接入。

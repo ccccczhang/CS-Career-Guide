@@ -14,6 +14,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import java.util.concurrent.TimeUnit
 
 class HttpCareerBridgeTest {
     private lateinit var server: MockWebServer
@@ -384,6 +385,86 @@ class HttpCareerBridgeTest {
         assertTrue(body.contains("\"top_k\":5"))
         assertFalse(body.contains("\"job_id\""))
         assertFalse(body.contains("\"query\""))
+    }
+
+    @Test
+    fun interviewStreamReadsSseThroughDoneAndEnd() = runTest {
+        val store = MemorySessionStore("token-a")
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "text/event-stream; charset=utf-8")
+                .throttleBody(1, 1, TimeUnit.MILLISECONDS)
+                .setBody(
+                    "data: {\"type\":\"chunk\",\"content\":\"你好，\"}\r\n\r\n" +
+                        "data: {\"type\":\"chunk\",\"content\":\"请介绍项目。\"}\r\n\r\n" +
+                        "data: {\"type\":\"audio\",\"audio\":\"YXVkaW8=\"}\r\n\r\n" +
+                        "data: [DONE]\r\n\r\n" +
+                        "data: {\"type\":\"end\",\"session_id\":\"session-a\"}\r\n\r\n",
+                ),
+        )
+        val bridge = bridge(store)
+        val events = mutableListOf<InterviewStreamEvent>()
+
+        val result = bridge.streamInterviewChat(
+            InterviewChatRequest(
+                message = "开始技术面试",
+                style = "technical",
+                enableTts = false,
+            ),
+        ) { event -> synchronized(events) { events += event } }
+
+        assertTrue(result is BridgeResult.Success)
+        val stream = (result as BridgeResult.Success).value
+        assertEquals("你好，请介绍项目。", stream.content)
+        assertEquals("session-a", stream.sessionId)
+        assertTrue(stream.done)
+        assertTrue(stream.ended)
+        assertEquals(
+            listOf(
+                InterviewStreamEvent.Chunk("你好，"),
+                InterviewStreamEvent.Chunk("请介绍项目。"),
+                InterviewStreamEvent.Audio("YXVkaW8="),
+                InterviewStreamEvent.Done,
+                InterviewStreamEvent.Session("session-a"),
+            ),
+            synchronized(events) { events.toList() },
+        )
+
+        val request = server.takeRequest()
+        assertEquals("/api/ai/llm/chat/", request.path)
+        assertEquals("Token token-a", request.getHeader("Authorization"))
+        assertEquals("text/event-stream", request.getHeader("Accept"))
+        val body = request.body.readUtf8()
+        assertTrue(body.contains("\"mode\":\"interview\""))
+        assertTrue(body.contains("\"interview_style\":\"technical\""))
+        assertTrue(body.contains("\"enable_tts\":false"))
+    }
+
+    @Test
+    fun incompleteInterviewStreamPreservesPartialTextButFails() = runTest {
+        val store = MemorySessionStore("token-a")
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "text/event-stream")
+                .setBody("data: {\"type\":\"chunk\",\"content\":\"已收到\"}\n\n"),
+        )
+        val bridge = bridge(store)
+        val events = mutableListOf<InterviewStreamEvent>()
+
+        val result = bridge.streamInterviewChat(
+            InterviewChatRequest(message = "继续面试"),
+        ) { event -> synchronized(events) { events += event } }
+
+        assertTrue(result is BridgeResult.Failure)
+        val error = (result as BridgeResult.Failure).error
+        assertEquals("INTERVIEW_STREAM_INCOMPLETE", error.businessCode)
+        assertTrue(error.message.contains("未完整结束"))
+        assertEquals(
+            listOf(InterviewStreamEvent.Chunk("已收到")),
+            synchronized(events) { events.toList() },
+        )
     }
 
     @Test

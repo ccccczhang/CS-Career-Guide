@@ -82,10 +82,15 @@ fun InterviewScreen(
         CareerPrepHeader(
             eyebrow = "AI 模拟面试",
             title = if (state.isRunning) "面试进行中" else "先选好这次练习目标",
-            subtitle = "文字优先，语音按钮使用明确标注的本地 Mock 状态。",
+            subtitle = "文字问答通过正式聊天接口流式返回；语音能力仍单独验收。",
         )
 
-        MockStatusBanner("对话、计时和复盘均为本地模拟，不调用模型、ASR 或 TTS。")
+        MockStatusBanner("对话与复盘使用真实 SSE；语音输入和播报尚未接入，不会请求麦克风或 TTS。")
+        state.error?.let {
+            Column(modifier = Modifier.testTag("interview_error")) {
+                PlatformStatus(it, isError = true)
+            }
+        }
 
         when {
             state.reviewLoading -> {
@@ -97,8 +102,15 @@ fun InterviewScreen(
                     ) {
                         CircularProgressIndicator(modifier = Modifier.size(24.dp))
                         Text(
-                            text = "正在生成本地复盘…",
+                            text = "正在生成面试复盘…",
                             style = MaterialTheme.typography.bodyLarge,
+                            color = CareerPalette.Muted,
+                        )
+                    }
+                    if (state.reviewProgress.isNotBlank()) {
+                        Text(
+                            text = state.reviewProgress,
+                            style = MaterialTheme.typography.bodyMedium,
                             color = CareerPalette.Muted,
                         )
                     }
@@ -310,7 +322,7 @@ private fun InterviewSession(
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        SectionLabel("面试对话", "Mock 面试官会根据回答生成下一问")
+        SectionLabel("面试对话", "面试官的回复会随流式响应逐步显示")
         state.messages.forEach { message ->
             InterviewBubble(message)
         }
@@ -372,7 +384,9 @@ private fun InterviewSession(
 private fun InterviewBubble(message: InterviewMessage) {
     val isUser = message.speaker == InterviewSpeaker.USER
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag(if (isUser) "interview_message_user" else "interview_message_interviewer"),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
         verticalAlignment = Alignment.Top,
     ) {
@@ -437,21 +451,23 @@ private fun InterviewReviewCard(
                 style = MaterialTheme.typography.titleLarge,
                 color = CareerPalette.Ink,
             )
-            Row(
-                verticalAlignment = Alignment.Bottom,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text(
-                    text = review.score.toString(),
-                    style = MaterialTheme.typography.displaySmall,
-                    color = CareerPalette.Moss,
-                )
-                Text(
-                    text = "/ 100 · Mock 参考分",
-                    modifier = Modifier.padding(bottom = 6.dp),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = CareerPalette.Muted,
-                )
+            if (review.score > 0) {
+                Row(
+                    verticalAlignment = Alignment.Bottom,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = review.score.toString(),
+                        style = MaterialTheme.typography.displaySmall,
+                        color = CareerPalette.Moss,
+                    )
+                    Text(
+                        text = "/ 100 · 参考分",
+                        modifier = Modifier.padding(bottom = 6.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = CareerPalette.Muted,
+                    )
+                }
             }
             Text(
                 text = review.summary,
@@ -481,6 +497,7 @@ private fun ReviewPoints(
     points: List<String>,
     accent: androidx.compose.ui.graphics.Color,
 ) {
+    if (points.isEmpty()) return
     PrepSectionCard {
         SectionLabel(title)
         points.forEach { point ->
