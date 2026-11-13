@@ -102,6 +102,7 @@ class AppViewModelTest {
             address = "杭州",
             profile = "正在准备后端开发校招。",
         )
+        advanceUntilIdle()
 
         assertEquals("新同学", viewModel.uiState.value.user?.displayName)
         assertEquals("软件工程", viewModel.uiState.value.user?.major)

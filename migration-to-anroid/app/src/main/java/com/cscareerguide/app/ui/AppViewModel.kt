@@ -22,6 +22,8 @@ data class AppUiState(
     val homeMetrics: HomeMetrics = HomeMetrics(0, 0),
     val authLoading: Boolean = false,
     val authError: String? = null,
+    val profileSaving: Boolean = false,
+    val profileError: String? = null,
 ) {
     val isAuthenticated: Boolean
         get() = user != null
@@ -41,6 +43,52 @@ class AppViewModel(
     val uiState: StateFlow<AppUiState> = _uiState.asStateFlow()
 
     private var authJob: Job? = null
+    private var profileJob: Job? = null
+
+    init {
+        viewModelScope.launch {
+            repository.authInvalidations.collect {
+                _uiState.update {
+                    it.copy(
+                        user = null,
+                        authLoading = false,
+                        profileSaving = false,
+                        profileError = null,
+                    )
+                }
+            }
+        }
+        if (repository.currentUser() != null) {
+            _uiState.update { it.copy(authLoading = true) }
+            viewModelScope.launch {
+                when (val result = repository.restoreSession()) {
+                    is AuthOutcome.Success -> {
+                        _uiState.update {
+                            it.copy(
+                                user = result.user,
+                                authLoading = false,
+                                authError = null,
+                            )
+                        }
+                    }
+                    is AuthOutcome.Failure -> {
+                        _uiState.update {
+                            it.copy(
+                                user = null,
+                                authLoading = false,
+                                authError = result.message.takeIf {
+                                    result.error?.authExpired != true
+                                },
+                            )
+                        }
+                    }
+                    null -> {
+                        _uiState.update { it.copy(authLoading = false) }
+                    }
+                }
+            }
+        }
+    }
 
     fun login(username: String, password: String) {
         runAuth { repository.login(username, password) }
@@ -52,14 +100,17 @@ class AppViewModel(
 
     fun logout() {
         authJob?.cancel()
-        repository.logout()
+        profileJob?.cancel()
         _uiState.update {
             it.copy(
                 user = null,
                 authLoading = false,
                 authError = null,
+                profileSaving = false,
+                profileError = null,
             )
         }
+        viewModelScope.launch { repository.logout() }
     }
 
     fun clearAuthError() {
@@ -77,19 +128,40 @@ class AppViewModel(
         profile: String,
     ) {
         val current = _uiState.value.user ?: return
-        val updated = repository.updateProfile(
-            current.copy(
-                displayName = displayName.trim().ifBlank { current.displayName },
-                school = school.trim(),
-                major = major.trim(),
-                grade = grade.trim(),
-                education = education.trim(),
-                email = email.trim(),
-                address = address.trim(),
-                profile = profile.trim(),
-            ),
+        val updated = current.copy(
+            displayName = displayName.trim().ifBlank { current.displayName },
+            school = school.trim(),
+            major = major.trim(),
+            grade = grade.trim(),
+            education = education.trim(),
+            email = email.trim(),
+            address = address.trim(),
+            profile = profile.trim(),
         )
-        _uiState.update { it.copy(user = updated) }
+        profileJob?.cancel()
+        profileJob = viewModelScope.launch {
+            _uiState.update { it.copy(profileSaving = true, profileError = null) }
+            when (val result = repository.updateProfile(updated)) {
+                is AuthOutcome.Success -> {
+                    _uiState.update {
+                        it.copy(
+                            user = result.user,
+                            profileSaving = false,
+                            profileError = null,
+                        )
+                    }
+                }
+                is AuthOutcome.Failure -> {
+                    _uiState.update {
+                        it.copy(
+                            user = if (result.error?.authExpired == true) null else it.user,
+                            profileSaving = false,
+                            profileError = result.message,
+                        )
+                    }
+                }
+            }
+        }
     }
 
     private fun runAuth(action: suspend () -> AuthOutcome) {

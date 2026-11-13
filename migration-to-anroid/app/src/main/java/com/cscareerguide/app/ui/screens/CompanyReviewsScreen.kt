@@ -77,7 +77,17 @@ fun CompanyReviewsScreen(
             },
         )
 
-        MockStatusBanner("岗位、榜单与前辈经验均为离线示例，不代表真实招聘结果。")
+        MockStatusBanner("岗位和前辈经验已接入服务端；红黑榜与安全提示仍为阶段性数据。")
+        if (state.loading) {
+            Text(
+                text = "正在同步岗位与前辈经验…",
+                style = MaterialTheme.typography.bodyMedium,
+                color = CareerPalette.Moss,
+            )
+        }
+        state.error?.let {
+            MockStatusBanner(it, isError = true)
+        }
 
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             items(HuntingTab.entries) { tab ->

@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.cscareerguide.app.data.AppRepository
+import com.cscareerguide.app.data.AppResult
 import com.cscareerguide.app.data.model.CompanyRanking
 import com.cscareerguide.app.data.model.InterviewMessage
 import com.cscareerguide.app.data.model.InterviewReview
@@ -62,6 +63,8 @@ data class HuntingUiState(
     val negativeRankings: List<CompanyRanking> = emptyList(),
     val advice: List<SeniorAdvice> = emptyList(),
     val form: AdviceFormUiState = AdviceFormUiState(),
+    val loading: Boolean = false,
+    val error: String? = null,
 ) {
     val visibleJobs: List<JobSummary>
         get() = jobs.filter { job ->
@@ -139,6 +142,8 @@ class CareerPrepViewModel(
     private var adviceJob: Job? = null
     private var resumeJob: Job? = null
     private var interviewJob: Job? = null
+    private var remoteJob: Job? = null
+    private var resumeLoadJob: Job? = null
 
     fun selectHuntingTab(tab: HuntingTab) {
         _huntingState.update { it.copy(selectedTab = tab, search = "") }
@@ -146,6 +151,7 @@ class CareerPrepViewModel(
 
     fun updateSearch(value: String) {
         _huntingState.update { it.copy(search = value) }
+        loadMarketData(value)
     }
 
     fun updateAdviceForm(transform: (SeniorAdviceDraft) -> SeniorAdviceDraft) {
@@ -276,14 +282,30 @@ class CareerPrepViewModel(
         resumeJob?.cancel()
         resumeJob = viewModelScope.launch {
             _resumeState.update { it.copy(saving = true, notice = null) }
-            delay(mockDelayMillis)
-            repository.saveResume(_resumeState.value.draft)
-            _resumeState.update {
-                it.copy(
-                    saving = false,
-                    notice = "简历已保存到本地 Mock 会话。",
-                    noticeIsError = false,
-                )
+            when (val result = repository.saveResumeRemote(_resumeState.value.draft)) {
+                is AppResult.Success -> {
+                    _resumeState.update {
+                        it.copy(
+                            draft = result.value,
+                            saving = false,
+                            notice = "简历已保存到服务端。",
+                            noticeIsError = false,
+                        )
+                    }
+                }
+                is AppResult.Failure -> {
+                    _resumeState.update {
+                        it.copy(
+                            saving = false,
+                            notice = if (result.error.httpStatus == 501) {
+                                "简历保存接口尚未实现，当前编辑内容仍保留在本地。"
+                            } else {
+                                result.error.message
+                            },
+                            noticeIsError = true,
+                        )
+                    }
+                }
             }
         }
     }
@@ -417,6 +439,85 @@ class CareerPrepViewModel(
                 reviewLoading = false,
                 remainingSeconds = it.durationMinutes * 60,
             )
+        }
+    }
+
+    fun resetUserState() {
+        adviceJob?.cancel()
+        resumeJob?.cancel()
+        interviewJob?.cancel()
+        adviceJob = null
+        resumeJob = null
+        interviewJob = null
+        remoteJob?.cancel()
+        remoteJob = null
+        resumeLoadJob?.cancel()
+        resumeLoadJob = null
+        _huntingState.value = HuntingUiState(
+            jobs = repository.jobs(),
+            positiveRankings = repository.companyRankings(true),
+            negativeRankings = repository.companyRankings(false),
+        )
+        _resumeState.value = ResumeUiState(draft = ResumeDraft())
+        _interviewState.value = InterviewUiState(
+            styleId = config.styles.firstOrNull { it.id == "technical" }?.id
+                ?: config.styles.firstOrNull()?.id
+                ?: "technical",
+            durationMinutes = initialDuration,
+            remainingSeconds = initialDuration * 60,
+        )
+    }
+
+    fun loadRemoteData(search: String = _huntingState.value.search) {
+        loadMarketData(search)
+        resumeLoadJob?.cancel()
+        resumeLoadJob = viewModelScope.launch {
+            when (val result = repository.loadResume()) {
+                is AppResult.Success -> {
+                    _resumeState.update {
+                        it.copy(
+                            draft = result.value ?: ResumeDraft(),
+                            notice = if (result.value == null) {
+                                "尚未创建简历，首次保存时将在服务端创建。"
+                            } else {
+                                null
+                            },
+                            noticeIsError = false,
+                        )
+                    }
+                }
+                is AppResult.Failure -> {
+                    _resumeState.update {
+                        it.copy(notice = result.error.message, noticeIsError = true)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun loadMarketData(search: String) {
+        remoteJob?.cancel()
+        remoteJob = viewModelScope.launch {
+            _huntingState.update { it.copy(loading = true, error = null) }
+            val jobs = repository.loadJobs(search, page = 1, pageSize = 100)
+            val advice = repository.loadSeniorAdvice(
+                search = search,
+                ordering = "recent",
+                page = 1,
+                pageSize = 50,
+            )
+            val errors = listOfNotNull(
+                (jobs as? AppResult.Failure)?.error?.message,
+                (advice as? AppResult.Failure)?.error?.message,
+            )
+            _huntingState.update {
+                it.copy(
+                    jobs = (jobs as? AppResult.Success)?.value?.items ?: it.jobs,
+                    advice = (advice as? AppResult.Success)?.value?.items ?: it.advice,
+                    loading = false,
+                    error = errors.firstOrNull(),
+                )
+            }
         }
     }
 

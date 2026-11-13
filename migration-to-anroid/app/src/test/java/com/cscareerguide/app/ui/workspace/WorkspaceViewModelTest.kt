@@ -52,6 +52,7 @@ class WorkspaceViewModelTest {
 
         viewModel.toggleResumeSuggestion("suggestion-001")
         viewModel.applyResumeSuggestions()
+        advanceUntilIdle()
         assertFalse(viewModel.uiState.value.resumeOptimization.isError)
         assertTrue(viewModel.uiState.value.resumeOptimization.status.contains("1 条建议"))
     }

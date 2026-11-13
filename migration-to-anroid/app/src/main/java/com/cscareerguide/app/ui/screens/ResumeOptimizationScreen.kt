@@ -52,12 +52,12 @@ fun ResumeOptimizationScreen(
         PlatformWorkspaceHeader(
             title = "简历优化",
             description = "对照目标岗位提出有原文依据的建议，确认前保持当前简历不变。",
-            stageLabel = "证据与确认 · Mock",
+            stageLabel = "证据与确认 · 待后端实现",
             currentRoute = currentRoute,
             onBack = onBack,
             onNavigate = onNavigate,
         )
-        MockStatusBanner("当前分析、证据与确认均为本地 Mock；桥接后必须携带简历版本和幂等请求 ID。")
+        MockStatusBanner("正式分析与建议应用路由已接入；后端未实现时会明确显示待开发，不生成模拟成功。")
 
         PrepSectionCard {
             SectionLabel("目标岗位 JD", "建议不超过一个完整职位描述")

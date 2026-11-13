@@ -14,7 +14,11 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
@@ -60,6 +64,23 @@ fun CareerGuideApp(
     workspaceViewModel: WorkspaceViewModel,
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    var wasAuthenticated by remember { mutableStateOf(uiState.isAuthenticated) }
+
+    LaunchedEffect(uiState.isAuthenticated) {
+        if (wasAuthenticated && !uiState.isAuthenticated) {
+            planningViewModel.resetUserState()
+            careerPrepViewModel.resetUserState()
+            workspaceViewModel.resetUserState()
+        }
+        wasAuthenticated = uiState.isAuthenticated
+    }
+
+    LaunchedEffect(uiState.user?.id) {
+        if (uiState.user != null) {
+            careerPrepViewModel.loadRemoteData()
+            workspaceViewModel.loadRemoteCatalog()
+        }
+    }
 
     if (!uiState.isAuthenticated) {
         AuthenticationNavHost(
@@ -134,10 +155,9 @@ private fun MainNavHost(
         if (activeRoute == tab.route) return
         navController.navigate(tab.route) {
             popUpTo(Routes.HOME) {
-                saveState = true
+                inclusive = false
             }
             launchSingleTop = true
-            restoreState = true
         }
     }
 
@@ -240,6 +260,8 @@ private fun MainNavHost(
                     onUpdateProfile = viewModel::updateProfile,
                     onNavigate = ::navigateGuarded,
                     onLogout = viewModel::logout,
+                    profileSaving = uiState.profileSaving,
+                    profileError = uiState.profileError,
                 )
             }
 
@@ -348,6 +370,8 @@ private fun MainNavHost(
                     onUpdateFilters = workspaceViewModel::updateCatalogFilters,
                     onSearch = workspaceViewModel::searchCatalog,
                     onReset = workspaceViewModel::resetCatalogFilters,
+                    onNextPage = workspaceViewModel::nextCatalogPage,
+                    onPreviousPage = workspaceViewModel::previousCatalogPage,
                 )
             }
 

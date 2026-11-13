@@ -69,6 +69,8 @@ fun ProfileScreen(
     ) -> Unit,
     onNavigate: (String) -> Unit,
     onLogout: () -> Unit,
+    profileSaving: Boolean = false,
+    profileError: String? = null,
 ) {
     var showEdit by remember { mutableStateOf(false) }
     Column(
@@ -100,7 +102,21 @@ fun ProfileScreen(
                 }
             },
         )
-        MockStatusBanner("个人资料、简历、推荐和复盘来自本地会话；桥接后需按当前 Token 隔离。")
+        MockStatusBanner("个人资料和简历已接入服务端；推荐和复盘仍为阶段数据。")
+        if (profileSaving) {
+            Text(
+                text = "正在保存个人资料…",
+                style = MaterialTheme.typography.bodyMedium,
+                color = CareerPalette.Moss,
+            )
+        }
+        profileError?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
 
         PrepSectionCard {
             Row(
@@ -208,9 +224,6 @@ fun ProfileScreen(
             }
             ProfileAction("练习记录 · $recordCount") {
                 onNavigate(Routes.PLATFORM_RECORDS)
-            }
-            ProfileAction("管理员评估") {
-                onNavigate(Routes.PLATFORM_EVALUATION)
             }
         }
 

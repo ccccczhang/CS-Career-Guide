@@ -155,6 +155,16 @@ class PlanningViewModel(
         _uiState.update { it.copy(introductionError = null) }
     }
 
+    fun resetUserState() {
+        saveJob?.cancel()
+        saveJob = null
+        _uiState.value = PlanningUiState(
+            careerPaths = repository.careerPaths(),
+            skillGroups = repository.skillGroups(),
+            careerCategories = repository.careerCategories(),
+        )
+    }
+
     override fun onCleared() {
         if (_uiState.value.draftStatus == DraftSaveStatus.PENDING) {
             saveDraftNow()

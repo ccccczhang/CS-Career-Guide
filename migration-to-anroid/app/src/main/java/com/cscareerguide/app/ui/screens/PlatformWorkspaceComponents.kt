@@ -34,7 +34,6 @@ val CourseModules = listOf(
     CourseModule(Routes.PLATFORM_RESUME, "简历优化"),
     CourseModule(Routes.PLATFORM_PRACTICE, "岗位题库练习"),
     CourseModule(Routes.PLATFORM_RECORDS, "练习记录"),
-    CourseModule(Routes.PLATFORM_EVALUATION, "评估与调优（管理员）"),
 )
 
 @Composable

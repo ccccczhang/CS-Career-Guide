@@ -58,7 +58,7 @@ class WorkspaceFlowTest {
             .performScrollTo()
             .performClick()
         composeRule.waitUntil(timeoutMillis = 5_000) {
-            composeRule.onAllNodesWithText("原文、证据与修改建议")
+            composeRule.onAllNodesWithText("简历分析后端尚未实现，界面保留为待开发。")
                 .fetchSemanticsNodes()
                 .isNotEmpty()
         }
@@ -70,13 +70,16 @@ class WorkspaceFlowTest {
         clickCourse("course_records")
         waitForTag("screen_platform_records")
 
-        clickCourse("course_evaluation")
-        waitForTag("screen_platform_evaluation")
     }
 
     private fun login() {
-        composeRule.onNodeWithTag("login_username").performTextInput("student")
-        composeRule.onNodeWithTag("login_password").performTextInput("123456")
+        composeRule.waitUntil(timeoutMillis = 5_000) {
+            composeRule.onAllNodesWithTag("screen_home").fetchSemanticsNodes().isNotEmpty() ||
+                composeRule.onAllNodesWithTag("login_username").fetchSemanticsNodes().isNotEmpty()
+        }
+        if (composeRule.onAllNodesWithTag("screen_home").fetchSemanticsNodes().isNotEmpty()) return
+        composeRule.onNodeWithTag("login_username").performTextInput(ServerTestAccount.username)
+        composeRule.onNodeWithTag("login_password").performTextInput(ServerTestAccount.password)
         composeRule.onNodeWithTag("login_submit").performScrollTo().performClick()
         waitForTag("screen_home")
     }

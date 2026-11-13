@@ -4,6 +4,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.cscareerguide.app.data.AppRepository
+import com.cscareerguide.app.data.AppResult
+import com.cscareerguide.app.data.CatalogQuery
+import com.cscareerguide.app.data.bridge.PracticeRetrieveRequest
 import com.cscareerguide.app.data.model.CatalogItem
 import com.cscareerguide.app.data.model.CatalogKind
 import com.cscareerguide.app.data.model.EvaluationRun
@@ -17,6 +20,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.util.UUID
 
 data class CatalogUiState(
     val kind: CatalogKind = CatalogKind.JOBS,
@@ -26,6 +30,9 @@ data class CatalogUiState(
     val topic: String = "",
     val difficulty: String = "",
     val pageSize: Int = 10,
+    val page: Int = 1,
+    val hasNext: Boolean = false,
+    val hasPrevious: Boolean = false,
     val items: List<CatalogItem> = emptyList(),
     val total: Int = 0,
     val latestSource: String = "",
@@ -41,16 +48,19 @@ data class ResumeOptimizationUiState(
     val busy: Boolean = false,
     val status: String = "填写目标 JD 后生成本地 Mock 分析。",
     val isError: Boolean = false,
+    val requestId: String = "",
 )
 
 data class PracticeUiState(
     val role: String = "Java后端",
     val topic: String = "集合",
     val difficulty: String = "easy",
-    val query: String = "集合",
+    val jdText: String = "集合",
     val topK: Int = 5,
     val submitted: Boolean = false,
     val results: List<PracticeQuestion> = emptyList(),
+    val retrievalId: String = "",
+    val requestId: String = "",
     val loading: Boolean = false,
     val status: String = "选择条件后开始检索。",
     val isError: Boolean = false,
@@ -93,18 +103,11 @@ class WorkspaceViewModel(
     private val repository: AppRepository,
     private val mockDelayMillis: Long = 350L,
 ) : ViewModel() {
-    private val allCatalog = repository.catalogItems()
-    private val allPracticeQuestions = repository.practiceQuestions()
     private val allRecords = repository.practiceRecords()
     private val initialRuns = repository.evaluationRuns()
 
     private val _uiState = MutableStateFlow(
         WorkspaceUiState(
-            catalog = CatalogUiState(
-                items = allCatalog.filter { it.kind == CatalogKind.JOBS },
-                total = allCatalog.count { it.kind == CatalogKind.JOBS },
-                latestSource = allCatalog.firstOrNull { it.kind == CatalogKind.JOBS }?.source.orEmpty(),
-            ),
             records = RecordsUiState(
                 records = allRecords,
                 selectedId = allRecords.firstOrNull()?.id,
@@ -132,6 +135,7 @@ class WorkspaceViewModel(
                     role = "",
                     topic = "",
                     difficulty = "",
+                    page = 1,
                     error = null,
                 ),
             )
@@ -154,6 +158,7 @@ class WorkspaceViewModel(
                     role = role ?: it.catalog.role,
                     topic = topic ?: it.catalog.topic,
                     difficulty = difficulty ?: it.catalog.difficulty,
+                    page = 1,
                     error = null,
                 ),
             )
@@ -164,31 +169,67 @@ class WorkspaceViewModel(
         catalogJob?.cancel()
         catalogJob = viewModelScope.launch {
             _uiState.update { it.copy(catalog = it.catalog.copy(loading = true, error = null)) }
-            delay(mockDelayMillis)
             val state = _uiState.value.catalog
-            val filtered = allCatalog.filter { item ->
-                item.kind == state.kind &&
-                    matches(state.query, item.title, item.subtitle, item.description, item.source) &&
-                    matches(state.city, item.city) &&
-                    matches(state.role, item.role, item.subtitle, item.tags.joinToString()) &&
-                    matches(state.topic, item.topic, item.title) &&
-                    (state.difficulty.isBlank() || item.difficulty == state.difficulty)
-            }
-            _uiState.update {
-                it.copy(
-                    catalog = it.catalog.copy(
-                        items = filtered,
-                        total = filtered.size,
-                        latestSource = filtered.firstOrNull()?.source.orEmpty(),
-                        loading = false,
+            when (
+                val result = repository.loadCatalog(
+                    CatalogQuery(
+                        kind = state.kind,
+                        query = state.query,
+                        city = state.city,
+                        role = state.role,
+                        topic = state.topic,
+                        difficulty = state.difficulty,
+                        page = state.page,
+                        pageSize = state.pageSize,
                     ),
                 )
+            ) {
+                is AppResult.Success -> {
+                    _uiState.update {
+                        it.copy(
+                            catalog = it.catalog.copy(
+                                items = result.value.items,
+                                total = result.value.total,
+                                latestSource = result.value.items.firstOrNull()?.source.orEmpty(),
+                                page = result.value.page,
+                                hasNext = result.value.next != null,
+                                hasPrevious = result.value.previous != null,
+                                loading = false,
+                                error = null,
+                            ),
+                        )
+                    }
+                }
+                is AppResult.Failure -> {
+                    _uiState.update {
+                        it.copy(
+                            catalog = it.catalog.copy(
+                                loading = false,
+                                error = result.error.message,
+                            ),
+                        )
+                    }
+                }
             }
         }
     }
 
     fun resetCatalogFilters() {
         updateCatalogFilters("", "", "", "", "")
+        searchCatalog()
+    }
+
+    fun nextCatalogPage() {
+        if (!_uiState.value.catalog.hasNext) return
+        _uiState.update { it.copy(catalog = it.catalog.copy(page = it.catalog.page + 1)) }
+        searchCatalog()
+    }
+
+    fun previousCatalogPage() {
+        if (!_uiState.value.catalog.hasPrevious) return
+        _uiState.update {
+            it.copy(catalog = it.catalog.copy(page = (it.catalog.page - 1).coerceAtLeast(1)))
+        }
         searchCatalog()
     }
 
@@ -199,6 +240,7 @@ class WorkspaceViewModel(
                     jdText = value,
                     status = "填写目标 JD 后生成本地 Mock 分析。",
                     isError = false,
+                    requestId = UUID.randomUUID().toString(),
                 ),
             )
         }
@@ -209,6 +251,7 @@ class WorkspaceViewModel(
             it.copy(
                 resumeOptimization = it.resumeOptimization.copy(
                     resumeRevision = value.filter(Char::isDigit).take(6).toIntOrNull() ?: 0,
+                    requestId = UUID.randomUUID().toString(),
                 ),
             )
         }
@@ -239,17 +282,46 @@ class WorkspaceViewModel(
                     ),
                 )
             }
-            delay(mockDelayMillis)
-            val analysis = repository.resumeAnalysis(_uiState.value.resumeOptimization.resumeRevision)
-            _uiState.update {
-                it.copy(
-                    resumeOptimization = it.resumeOptimization.copy(
-                        analysis = analysis,
-                        acceptedSuggestionIds = emptySet(),
-                        busy = false,
-                        status = analysis.summary,
-                    ),
+            val current = _uiState.value.resumeOptimization
+            val requestId = current.requestId.ifBlank { UUID.randomUUID().toString() }
+            when (
+                val result = repository.analyzeResumeRemote(
+                    jdText = current.jdText,
+                    revision = current.resumeRevision,
+                    requestId = requestId,
                 )
+            ) {
+                is AppResult.Success -> {
+                    val analysis = repository.resumeAnalysis(current.resumeRevision)
+                    _uiState.update {
+                        it.copy(
+                            resumeOptimization = it.resumeOptimization.copy(
+                                analysis = analysis,
+                                acceptedSuggestionIds = emptySet(),
+                                busy = false,
+                                status = analysis.summary,
+                                isError = false,
+                                requestId = requestId,
+                            ),
+                        )
+                    }
+                }
+                is AppResult.Failure -> {
+                    _uiState.update {
+                        it.copy(
+                            resumeOptimization = it.resumeOptimization.copy(
+                                busy = false,
+                                status = if (result.error.httpStatus == 501) {
+                                    "简历分析后端尚未实现，界面保留为待开发。"
+                                } else {
+                                    result.error.message
+                                },
+                                isError = true,
+                                requestId = requestId,
+                            ),
+                        )
+                    }
+                }
             }
         }
     }
@@ -269,6 +341,7 @@ class WorkspaceViewModel(
 
     fun applyResumeSuggestions() {
         val state = _uiState.value.resumeOptimization
+        val analysis = state.analysis
         if (state.acceptedSuggestionIds.isEmpty()) {
             _uiState.update {
                 it.copy(
@@ -280,13 +353,57 @@ class WorkspaceViewModel(
             }
             return
         }
-        _uiState.update {
-            it.copy(
-                resumeOptimization = it.resumeOptimization.copy(
-                    status = "已模拟确认 ${state.acceptedSuggestionIds.size} 条建议；真实应用需等待桥接接口。",
-                    isError = false,
-                ),
-            )
+        if (analysis == null) {
+            _uiState.update {
+                it.copy(
+                    resumeOptimization = it.resumeOptimization.copy(
+                        status = "后端尚未返回可应用的简历分析。",
+                        isError = true,
+                    ),
+                )
+            }
+            return
+        }
+        resumeJob?.cancel()
+        resumeJob = viewModelScope.launch {
+            _uiState.update {
+                it.copy(resumeOptimization = it.resumeOptimization.copy(busy = true, isError = false))
+            }
+            when (
+                val result = repository.applyResumeAnalysisRemote(
+                    analysisId = analysis.id,
+                    baseRevision = state.resumeRevision,
+                    suggestionIds = state.acceptedSuggestionIds.toList(),
+                    requestId = UUID.randomUUID().toString(),
+                )
+            ) {
+                is AppResult.Success -> {
+                    _uiState.update {
+                        it.copy(
+                            resumeOptimization = it.resumeOptimization.copy(
+                                busy = false,
+                                status = "已确认 ${state.acceptedSuggestionIds.size} 条建议；等待服务端返回新简历版本。",
+                                isError = false,
+                            ),
+                        )
+                    }
+                }
+                is AppResult.Failure -> {
+                    _uiState.update {
+                        it.copy(
+                            resumeOptimization = it.resumeOptimization.copy(
+                                busy = false,
+                                status = if (result.error.httpStatus == 501) {
+                                    "简历建议应用后端尚未实现，界面保留为待开发。"
+                                } else {
+                                    result.error.message
+                                },
+                                isError = true,
+                            ),
+                        )
+                    }
+                }
+            }
         }
     }
 
@@ -294,7 +411,7 @@ class WorkspaceViewModel(
         role: String? = null,
         topic: String? = null,
         difficulty: String? = null,
-        query: String? = null,
+        jdText: String? = null,
         topK: Int? = null,
     ) {
         _uiState.update {
@@ -303,10 +420,12 @@ class WorkspaceViewModel(
                     role = role ?: it.practice.role,
                     topic = topic ?: it.practice.topic,
                     difficulty = difficulty ?: it.practice.difficulty,
-                    query = query ?: it.practice.query,
+                    jdText = jdText ?: it.practice.jdText,
                     topK = topK ?: it.practice.topK,
                     submitted = false,
                     results = emptyList(),
+                    retrievalId = "",
+                    requestId = "",
                 ),
             )
         }
@@ -318,21 +437,21 @@ class WorkspaceViewModel(
                 role = "Java后端",
                 topic = "集合",
                 difficulty = "easy",
-                query = "ArrayList",
+                jdText = "ArrayList",
                 topK = 5,
             )
             "empty" -> updatePracticeFilters(
                 role = "Java后端",
                 topic = "不存在的知识点",
                 difficulty = "easy",
-                query = "不存在",
+                jdText = "不存在",
                 topK = 5,
             )
             else -> updatePracticeFilters(
                 role = "Java后端",
                 topic = "集合",
                 difficulty = "easy",
-                query = "集合",
+                jdText = "集合",
                 topK = 5,
             )
         }
@@ -342,6 +461,7 @@ class WorkspaceViewModel(
     fun retrievePracticeQuestions() {
         val state = _uiState.value.practice
         if (state.loading) return
+        val requestId = state.requestId.ifBlank { UUID.randomUUID().toString() }
         practiceJob?.cancel()
         practiceJob = viewModelScope.launch {
             _uiState.update {
@@ -349,34 +469,58 @@ class WorkspaceViewModel(
                     practice = it.practice.copy(
                         loading = true,
                         submitted = true,
-                        status = "正在筛选并排序候选题目…",
+                        requestId = requestId,
+                        status = "正在从正式题库检索候选题…",
                         isError = false,
                     ),
                 )
             }
             delay(mockDelayMillis)
-            val results = allPracticeQuestions
-                .filter { it.role == state.role }
-                .filter { state.topic.isBlank() || it.topic.contains(state.topic, ignoreCase = true) }
-                .filter { it.difficulty == state.difficulty }
-                .filter {
-                    state.query.isBlank() ||
-                        it.question.contains(state.query, ignoreCase = true) ||
-                        it.topic.contains(state.query, ignoreCase = true)
-                }
-                .take(state.topK.coerceIn(1, 20))
-            _uiState.update {
-                it.copy(
-                    practice = it.practice.copy(
-                        results = results,
-                        loading = false,
-                        status = if (results.isEmpty()) {
-                            "没有符合条件的演示题。"
-                        } else {
-                            "检索完成，返回 ${results.size} 道有来源的演示题。"
-                        },
+            when (
+                val result = repository.retrievePracticeQuestions(
+                    PracticeRetrieveRequest(
+                        role = state.role,
+                        topic = state.topic,
+                        difficulty = state.difficulty,
+                        jdText = state.jdText,
+                        topK = state.topK,
+                        requestId = requestId,
                     ),
                 )
+            ) {
+                is AppResult.Success -> {
+                    val retrieval = result.value
+                    _uiState.update {
+                        it.copy(
+                            practice = it.practice.copy(
+                                results = retrieval.results,
+                                retrievalId = retrieval.retrievalId,
+                                requestId = "",
+                                loading = false,
+                                status = when {
+                                    retrieval.results.isNotEmpty() ->
+                                        "检索完成，返回 ${retrieval.count} 道有来源的题目。"
+                                    retrieval.message.isNotBlank() -> retrieval.message
+                                    else -> "没有符合条件的题目，请调整检索条件。"
+                                },
+                                isError = false,
+                            ),
+                        )
+                    }
+                }
+                is AppResult.Failure -> {
+                    _uiState.update {
+                        it.copy(
+                            practice = it.practice.copy(
+                                results = emptyList(),
+                                retrievalId = "",
+                                loading = false,
+                                status = result.error.message,
+                                isError = true,
+                            ),
+                        )
+                    }
+                }
             }
         }
     }
@@ -507,6 +651,25 @@ class WorkspaceViewModel(
                 ),
             )
         }
+    }
+
+    fun resetUserState() {
+        catalogJob?.cancel()
+        resumeJob?.cancel()
+        practiceJob?.cancel()
+        evaluationJob?.cancel()
+        catalogJob = null
+        resumeJob = null
+        practiceJob = null
+        evaluationJob = null
+        val catalog = repository.catalogItems().filter { it.kind == CatalogKind.JOBS }
+        _uiState.value = WorkspaceUiState(
+            catalog = CatalogUiState(items = catalog, total = catalog.size),
+        )
+    }
+
+    fun loadRemoteCatalog() {
+        searchCatalog()
     }
 
     private fun matches(query: String, vararg values: String): Boolean {

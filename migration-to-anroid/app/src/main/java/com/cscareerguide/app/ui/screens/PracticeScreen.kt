@@ -55,13 +55,13 @@ fun PracticeScreen(
     ) {
         PlatformWorkspaceHeader(
             title = "让每一道题，都有据可查",
-            description = "选择岗位、知识点和难度，观察候选题如何筛选、排序，再查看原始参考要点。",
-            stageLabel = "检索演示 · 自编题",
+            description = "选择岗位、知识点和难度，从正式题库检索候选题，并查看逐字段来源证据。",
+            stageLabel = "正式题库 · 文本检索",
             currentRoute = currentRoute,
             onBack = onBack,
             onNavigate = onNavigate,
         )
-        MockStatusBanner("只演示题目检索和来源证据；不调用模型，不保存回答或练习记录。")
+        MockStatusBanner("当前只检索题目和来源证据；不调用模型，也不创建练习会话。")
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
@@ -85,7 +85,7 @@ fun PracticeScreen(
             PlatformPracticeInput("知识点", state.topic) {
                 onUpdateFilters(null, it, null, null, null)
             }
-            PlatformPracticeInput("查询文本", state.query) {
+            PlatformPracticeInput("补充 JD（可选）", state.jdText) {
                 onUpdateFilters(null, null, null, it, null)
             }
             FlowRow(
@@ -187,7 +187,7 @@ fun PracticeScreen(
         if (state.submitted) {
             Text(
                 text = "本次条件：${state.role} / ${state.topic.ifBlank { "全部知识点" }} / " +
-                    "${state.difficulty.ifBlank { "全部难度" }} · ${state.query.ifBlank { "仅筛选" }}",
+                    "${state.difficulty.ifBlank { "全部难度" }} · ${state.jdText.ifBlank { "未提供 JD" }}",
                 style = MaterialTheme.typography.bodyMedium,
                 color = CareerPalette.Muted,
             )
@@ -196,7 +196,7 @@ fun PracticeScreen(
         if (state.submitted && !state.loading && state.results.isEmpty()) {
             EmptyPrepState(
                 title = "没有符合条件的题目",
-                description = "尝试其他知识点或清空查询；这里不会补入不相关题目。",
+                description = "尝试其他岗位、知识点或清空 JD；这里不会补入不相关题目。",
             )
         } else {
             state.results.forEachIndexed { index, item ->
@@ -232,7 +232,7 @@ private fun PracticeQuestionCard(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = "候选 ${index + 1} · 演示题",
+                text = "候选 ${index + 1} · ${item.origin.ifBlank { "正式题库" }}",
                 modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.labelLarge,
                 color = CareerPalette.Muted,
@@ -284,7 +284,14 @@ private fun PracticeQuestionCard(
                     color = CareerPalette.Moss,
                 )
                 if (evidenceExpanded) {
-                    item.sourceEvidence.forEach { evidence ->
+                    val evidenceLines = if (item.evidence.isNotEmpty()) {
+                        item.evidence.map {
+                            "${it.fieldPath}: ${it.quote} · 来源 ${it.sourceId}"
+                        }
+                    } else {
+                        item.sourceEvidence
+                    }
+                    evidenceLines.forEach { evidence ->
                         Text(
                             text = evidence,
                             style = MaterialTheme.typography.bodyMedium,

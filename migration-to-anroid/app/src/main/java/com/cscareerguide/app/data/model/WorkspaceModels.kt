@@ -49,6 +49,25 @@ data class PracticeQuestion(
     val keyPoints: List<String>,
     val sourceEvidence: List<String>,
     val matchScore: Double,
+    val evidence: List<QuestionEvidence> = emptyList(),
+    val origin: String = "",
+    val source: String = "",
+    val sourceUrl: String = "",
+    val permissionStatus: String = "allowed",
+    val collectedAt: String = "",
+)
+
+data class QuestionEvidence(
+    val sourceId: String,
+    val fieldPath: String,
+    val quote: String,
+)
+
+data class PracticeRetrieval(
+    val count: Int,
+    val retrievalId: String,
+    val message: String,
+    val results: List<PracticeQuestion>,
 )
 
 data class PracticeAnswer(

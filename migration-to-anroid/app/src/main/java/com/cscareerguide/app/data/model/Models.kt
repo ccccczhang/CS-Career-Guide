@@ -197,7 +197,17 @@ data class ResumeCertificate(
     val description: String = "",
 )
 
+data class ResumeAward(
+    val name: String = "",
+    val issuer: String = "",
+    val period: String = "",
+    val description: String = "",
+)
+
 data class ResumeDraft(
+    val id: String = "",
+    val editRevision: Int = 0,
+    val avatarUrl: String = "",
     val name: String = "",
     val targetPosition: String = "",
     val phone: String = "",
@@ -209,6 +219,9 @@ data class ResumeDraft(
     val experience: List<ResumeExperience> = emptyList(),
     val projects: List<ResumeProject> = emptyList(),
     val certificates: List<ResumeCertificate> = emptyList(),
+    val awards: List<ResumeAward> = emptyList(),
+    val createdAt: String = "",
+    val updatedAt: String = "",
 )
 
 data class InterviewStyleOption(

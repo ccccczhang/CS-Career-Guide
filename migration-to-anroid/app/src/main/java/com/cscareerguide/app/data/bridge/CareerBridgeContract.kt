@@ -1,12 +1,19 @@
 package com.cscareerguide.app.data.bridge
 
+import com.cscareerguide.app.data.PagedData
 import com.cscareerguide.app.data.model.CatalogKind
+import com.cscareerguide.app.data.model.CatalogItem
+import com.cscareerguide.app.data.model.JobSummary
+import com.cscareerguide.app.data.model.PracticeRetrieval
+import com.cscareerguide.app.data.model.ResumeDraft
+import com.cscareerguide.app.data.model.SeniorAdvice
+import com.cscareerguide.app.data.model.UserProfile
+import kotlinx.serialization.json.JsonElement
 
 /**
- * Backend route registry for the future Android bridge.
+ * Backend route registry for the Android bridge.
  *
- * TODO(bridge): keep these paths aligned with CS-Career-Guide/docs/app-api.md.
- * TODO(bridge): resolve [API_PREFIX] through a non-secret build configuration.
+ * BuildConfig.API_BASE_URL is the origin without [API_PREFIX].
  */
 object BridgeRoutes {
     const val API_PREFIX = "/api"
@@ -64,7 +71,7 @@ object BridgeRoutes {
         "${evaluationRun(id)}export/"
 
     private fun encodePath(value: String): String =
-        java.net.URLEncoder.encode(value, Charsets.UTF_8.name())
+        java.net.URLEncoder.encode(value, Charsets.UTF_8.name()).replace("+", "%20")
 }
 
 sealed interface BridgeResult<out T> {
@@ -72,10 +79,35 @@ sealed interface BridgeResult<out T> {
     data class NotConfigured(val route: String) : BridgeResult<Nothing>
     data class Failure(
         val route: String,
-        val code: Int?,
-        val message: String,
+        val error: BridgeError,
     ) : BridgeResult<Nothing>
 }
+
+data class BridgeError(
+    val httpStatus: Int?,
+    val businessCode: String?,
+    val message: String,
+    val details: JsonElement?,
+    val fieldErrors: Map<String, List<String>>,
+    val retryable: Boolean,
+    val authExpired: Boolean,
+)
+
+data class AuthSession(
+    val user: UserProfile,
+    val token: String,
+)
+
+data class ProfileUpdate(
+    val displayName: String,
+    val school: String,
+    val major: String,
+    val grade: String,
+    val education: String,
+    val email: String,
+    val address: String,
+    val profile: String,
+)
 
 data class BridgeAuthorization(
     val token: String,
@@ -107,10 +139,12 @@ data class ResumeApplyRequest(
 
 data class PracticeRetrieveRequest(
     val role: String,
-    val topic: String,
-    val difficulty: String,
-    val query: String,
-    val topK: Int,
+    val topic: String = "",
+    val difficulty: String = "easy",
+    val jobId: Long? = null,
+    val jdText: String = "",
+    val topK: Int = 5,
+    val requestId: String,
 )
 
 /**
@@ -120,18 +154,52 @@ data class PracticeRetrieveRequest(
  * this interface directly. The TODO markers are deliberate hand-off points.
  */
 interface CareerBridge {
-    // TODO(bridge): implement auth/profile calls, including Token header and multipart avatar upload.
-    suspend fun login(username: String, password: String): BridgeResult<Unit>
+    suspend fun login(username: String, password: String): BridgeResult<AuthSession>
 
-    // TODO(bridge): map paginated catalog responses, permission_status and source metadata.
-    suspend fun catalog(query: CatalogBridgeQuery): BridgeResult<Unit>
+    suspend fun register(
+        username: String,
+        password: String,
+        confirmation: String,
+    ): BridgeResult<AuthSession>
 
-    // TODO(bridge): send UUID request_id once and reuse it when retrying the same operation.
-    suspend fun analyzeResume(request: ResumeAnalysisRequest): BridgeResult<Unit>
+    suspend fun logout(token: String): BridgeResult<Unit>
 
-    suspend fun applyResumeAnalysis(request: ResumeApplyRequest): BridgeResult<Unit>
+    suspend fun profile(): BridgeResult<UserProfile>
 
-    suspend fun retrieveQuestions(request: PracticeRetrieveRequest): BridgeResult<Unit>
+    suspend fun updateProfile(update: ProfileUpdate): BridgeResult<UserProfile>
+
+    suspend fun catalog(query: CatalogBridgeQuery): BridgeResult<PagedData<CatalogItem>>
+
+    suspend fun resume(): BridgeResult<ResumeDraft?>
+
+    suspend fun saveResume(draft: ResumeDraft): BridgeResult<ResumeDraft>
+
+    suspend fun uploadResumeAvatar(
+        bytes: ByteArray,
+        fileName: String,
+        mediaType: String,
+    ): BridgeResult<String>
+
+    suspend fun deleteResumeAvatar(): BridgeResult<Unit>
+
+    suspend fun analyzeResume(request: ResumeAnalysisRequest): BridgeResult<JsonElement>
+
+    suspend fun applyResumeAnalysis(request: ResumeApplyRequest): BridgeResult<JsonElement>
+
+    suspend fun jobs(
+        search: String,
+        page: Int,
+        pageSize: Int,
+    ): BridgeResult<PagedData<JobSummary>>
+
+    suspend fun seniorAdvice(
+        search: String,
+        ordering: String,
+        page: Int,
+        pageSize: Int,
+    ): BridgeResult<PagedData<SeniorAdvice>>
+
+    suspend fun retrieveQuestions(request: PracticeRetrieveRequest): BridgeResult<PracticeRetrieval>
 
     // TODO(bridge): implement practice session create/answer/retry/finish and record mapping.
     suspend fun listPracticeSessions(): BridgeResult<Unit>
@@ -145,33 +213,4 @@ interface CareerBridge {
         message: String,
         onEvent: (String) -> Unit,
     ): BridgeResult<Unit>
-}
-
-class UnconfiguredCareerBridge : CareerBridge {
-    override suspend fun login(username: String, password: String): BridgeResult<Unit> =
-        BridgeResult.NotConfigured(BridgeRoutes.LOGIN)
-
-    override suspend fun catalog(query: CatalogBridgeQuery): BridgeResult<Unit> =
-        BridgeResult.NotConfigured(BridgeRoutes.catalog(query.kind))
-
-    override suspend fun analyzeResume(request: ResumeAnalysisRequest): BridgeResult<Unit> =
-        BridgeResult.NotConfigured(BridgeRoutes.RESUME_ANALYSES)
-
-    override suspend fun applyResumeAnalysis(request: ResumeApplyRequest): BridgeResult<Unit> =
-        BridgeResult.NotConfigured(BridgeRoutes.applyResumeAnalysis(request.analysisId))
-
-    override suspend fun retrieveQuestions(request: PracticeRetrieveRequest): BridgeResult<Unit> =
-        BridgeResult.NotConfigured(BridgeRoutes.QUESTION_RETRIEVE_DEMO)
-
-    override suspend fun listPracticeSessions(): BridgeResult<Unit> =
-        BridgeResult.NotConfigured(BridgeRoutes.PRACTICE_SESSIONS)
-
-    override suspend fun listEvaluationRuns(): BridgeResult<Unit> =
-        BridgeResult.NotConfigured(BridgeRoutes.EVALUATION_RUNS)
-
-    override suspend fun streamInterviewChat(
-        sessionId: String,
-        message: String,
-        onEvent: (String) -> Unit,
-    ): BridgeResult<Unit> = BridgeResult.NotConfigured(BridgeRoutes.INTERVIEW_CHAT)
 }

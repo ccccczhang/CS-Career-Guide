@@ -101,7 +101,7 @@ fun LoginScreen(
             )
             Spacer(Modifier.height(8.dp))
             Text(
-                text = "当前为 UI/Mock 阶段，使用任意账号和至少 6 位密码即可登录。",
+                text = "使用产品测试账号登录；账号和密码会提交到当前配置的后端。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = CareerPalette.Muted,
                 textAlign = TextAlign.Center,

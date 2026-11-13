@@ -41,6 +41,8 @@ fun CatalogScreen(
     onUpdateFilters: (String?, String?, String?, String?, String?) -> Unit,
     onSearch: () -> Unit,
     onReset: () -> Unit,
+    onNextPage: () -> Unit,
+    onPreviousPage: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -53,12 +55,12 @@ fun CatalogScreen(
         PlatformWorkspaceHeader(
             title = "岗位、企业与面试题库",
             description = "查询带来源的岗位、企业和题目；公开结果只展示许可通过的记录。",
-            stageLabel = "目录数据 · Mock",
+            stageLabel = "正式目录 · 服务端",
             currentRoute = currentRoute,
             onBack = onBack,
             onNavigate = onNavigate,
         )
-        MockStatusBanner("当前展示本地演示目录。真实分页、来源与权限状态需通过桥接接口提供。")
+        MockStatusBanner("目录、来源和权限状态来自正式接口；空库会显示真实空结果。")
 
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -187,7 +189,7 @@ fun CatalogScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 CircularProgressIndicator(modifier = Modifier.height(22.dp))
-                Text("正在读取本地目录…", color = CareerPalette.Muted)
+                Text("正在读取服务端目录…", color = CareerPalette.Muted)
             }
         } else if (state.items.isEmpty()) {
             EmptyPrepState(
@@ -196,6 +198,30 @@ fun CatalogScreen(
             )
         } else {
             state.items.forEach { item -> CatalogItemCard(item) }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            OutlinedButton(
+                onClick = onPreviousPage,
+                enabled = state.hasPrevious && !state.loading,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("上一页")
+            }
+            Text(
+                text = "第 ${state.page} 页",
+                modifier = Modifier.padding(vertical = 12.dp),
+                color = CareerPalette.Muted,
+            )
+            OutlinedButton(
+                onClick = onNextPage,
+                enabled = state.hasNext && !state.loading,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("下一页")
+            }
         }
         Spacer(Modifier.height(4.dp))
     }

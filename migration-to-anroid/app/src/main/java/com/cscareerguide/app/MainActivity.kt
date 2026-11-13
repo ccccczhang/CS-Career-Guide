@@ -6,7 +6,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.remember
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.cscareerguide.app.data.InMemoryMockRepository
+import com.cscareerguide.app.data.RemoteCareerRepository
+import com.cscareerguide.app.data.bridge.HttpCareerBridge
+import com.cscareerguide.app.data.session.EncryptedAuthSessionStore
 import com.cscareerguide.app.ui.AppViewModel
 import com.cscareerguide.app.ui.AppViewModelFactory
 import com.cscareerguide.app.ui.careerprep.CareerPrepViewModel
@@ -17,15 +19,28 @@ import com.cscareerguide.app.ui.planning.PlanningViewModelFactory
 import com.cscareerguide.app.ui.theme.CsCareerGuideTheme
 import com.cscareerguide.app.ui.workspace.WorkspaceViewModel
 import com.cscareerguide.app.ui.workspace.WorkspaceViewModelFactory
+import java.util.concurrent.TimeUnit
+import okhttp3.OkHttpClient
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            // TODO(bridge): inject authenticated HTTP repository/adapters here after the bridge
-            // prerequisites in docs/bridge-integration.md are confirmed.
-            val repository = remember { InMemoryMockRepository() }
+            val repository = remember {
+                val sessionStore = EncryptedAuthSessionStore(applicationContext)
+                val bridge = HttpCareerBridge(
+                    apiBaseUrl = BuildConfig.API_BASE_URL,
+                    sessionStore = sessionStore,
+                    client = OkHttpClient.Builder()
+                        .callTimeout(30, TimeUnit.SECONDS)
+                        .connectTimeout(15, TimeUnit.SECONDS)
+                        .readTimeout(30, TimeUnit.SECONDS)
+                        .build(),
+                    allowCleartext = BuildConfig.ALLOW_CLEARTEXT,
+                )
+                RemoteCareerRepository(bridge, sessionStore)
+            }
             val factory = remember(repository) { AppViewModelFactory(repository) }
             val planningFactory = remember(repository) { PlanningViewModelFactory(repository) }
             val careerPrepFactory = remember(repository) { CareerPrepViewModelFactory(repository) }
