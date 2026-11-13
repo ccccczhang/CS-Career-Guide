@@ -1,6 +1,6 @@
 # 成员5：练习记录、结束总结与历史
 
-先读 [公共约定](00-shared-contracts.md) 与 [当前方案](../career_platform_plan.md)。已有legacy复盘表不包含本期逐题契约。当前新PracticeSession/AnswerRecord受管理模型、唯一约束、路由及历史页面骨架已建，所有业务仍501。
+先读 [公共约定](00-shared-contracts.md) 与 [当前方案](../career_platform_plan.md)。已有legacy复盘表不包含本期逐题契约。2026-11-10 本地补丁已实现 PracticeSession/AnswerRecord Repository、状态机、迁移、RAG 交接和 Records 页面；专项离线验收通过，但真实模型、MySQL、远端 CI、浏览器和完整五模块链路仍未完成。
 
 ## 目标、目录与不做范围
 
@@ -14,13 +14,14 @@
 
 | 操作 | 输入→步骤→输出/保存 | 失败行为 |
 | --- | --- | --- |
-| start | role/job_id/jd_text/topic/difficulty/request_id→当前用户→读取岗位/简历→深拷贝快照→创建active会话 | 来源不存在404；同键同输入同ID；不同输入409 |
+| start | role、question_ids、可选job_id/jd_text/topic/retrieval_id、difficulty、request_id→当前用户→读取岗位/简历/题目或回执→深拷贝快照→创建active会话 | 来源不存在404；空/重复题目与未允许来源400；同键同输入同ID；不同输入409 |
 | record_answer | 会话、题目快照、真实回答、request_id→锁会话→检查active/题归属→AnswerRecord | 先保存后生成，模型失败不丢输入；已结束409 |
-| record_feedback | 原AnswerRecord、已校验feedback/status→检查归属与允许状态→原记录更新 | 重试不新增回答；未经成员4证据校验不得成功保存 |
+| record_feedback | 原AnswerRecord、已校验feedback/status、feedback_request_id→检查归属与当前尝试键→原记录更新 | 重试不新增回答；未经成员4证据校验不得成功保存；旧尝试键结果不覆盖新尝试 |
+| begin_feedback_retry | session_id、record id、新request_id→锁原回答→检查失败/超时和上限→认领反馈尝试 | 相同尝试键不重复模型；超限409；HTTP由成员4编排 |
 | list/get | user+分页/UUID→查询会话、回答及快照→时间/岗位列表和详情 | 越权404；读取历史不依赖原题、原岗位现值 |
 | finish | request_id→锁会话→关闭作答入口、记ended_at→锁外总结→保存summary状态与内容 | 重复结束不再调用模型；失败原记录仍在，summary失败明确，允许明确重试 |
 
-会话active→ended与summary pending/succeeded/failed独立；结束时先封闭回答，再调用模型，禁止网络请求持有长事务。finish_request_id保存首次结束键，summary_request_id保存当前总结尝试键。重复结束复用原结果；只有summary失败且retry_summary=true的新request_id才允许重试。相同尝试键不重复调用模型，并发尝试须用事务和原子状态保护。
+会话active→ended与summary pending/succeeded/failed独立；结束时先封闭回答，再调用模型，禁止网络请求持有长事务。finish_request_id保存首次结束键，summary_request_id保存当前总结尝试键。普通重复结束复用当前结果；显式retry_summary=true并使用未出现过的新request_id，才可认领失败或超过配置阈值的pending尝试。空会话为ended + failed/NO_ANSWERS，不调用模型或生成固定报告。相同尝试键不重复调用模型，数据库锁的真实并发行为仍需MySQL专项验收。
 
 快照至少保存岗位ID/标题/JD/来源、简历版本与当时内容、题干/参考要点/source/source_url/证据及检索参数；按实际需要最少化私人数据，不写凭据。来源后改/删除后历史仍完整，question/job外键SET_NULL后不影响快照。只读快照，不能从JSON字段反向修改当前题库或简历。
 
@@ -28,7 +29,19 @@
 
 ## 成员4交接与替身
 
-成员4调用 `record_answer(user=user,data={id:session_id,question_id,question_snapshot,answer,request_id})` 获得record ID；调用 `record_feedback(user=user,data={id:record_id,feedback,status,failure_code})`。这些是服务内契约，不是允许HTTP用户直接指定status/owner。具体返回字段和下发题快照关联由04/05一起审核固定后同步00，不能各选字段名。
+成员4调用 `record_answer(user=user,data={id:session_id,question_id,question_snapshot,answer,request_id})`，获得回答项及内部 `should_generate_feedback`、`feedback_request_id`；仅should_generate_feedback=true者调用模型。写回调用 `record_feedback(user=user,data={id:record_id,feedback,status,failure_code,feedback_request_id})`；显式重试先调用 `begin_feedback_retry(user=user,data={session_id,id:record_id,request_id})`。这些是服务内契约，HTTP用户不能指定status/owner；内部控制字段由RAG服务从HTTP响应中移除。
+
+## 当前实现、迁移与页面（2026-11-10）
+
+- 唯一生产组装为 DjangoPracticeRepository + PracticeService；Repository可注入，默认构造兼容固定测试，业务不写legacy复盘表。
+- 迁移 `0003_practice_records_runtime` 为会话增加role/topic/difficulty/job_title查询字段、summary_started_at/summary_attempt_log；回答增加question_key、feedback_request_id/feedback_started_at/feedback_attempt_log。先添加可空题目键、回填并检查重复，再改非空、加 `(session,question_key)` 唯一约束和查询索引。
+- question_key优先取快照题目ID，再取外键ID，均缺时为legacy:回答ID；长度截到64。发现重复时迁移报错，不自动删除或合并数据。回退迁移不会恢复回填前值；MySQL部分DDL可能已提交，正式执行前必须备份并核对迁移状态。
+- 列表返回count/page/page_size/results，支持q/role/topic/difficulty，按created_at和id倒序、聚合answer_count；越界页当前为200空列表，无status筛选。详情返回快照、summary、按时间正序的answers。
+- Records.vue已接入真实列表、详情、`?id=`深链、总结/反馈重试；Practice.vue仍是独立只读演示，尚无页面创建正式会话或提交正式回答，完整网页练习闭环未完成。
+- 新回答须active且题目已下发；同题新request_id为409。已保存的同键同输入回答可返回原记录，即使会话已结束也不会新增回答；不是“结束后所有重放均409”。
+- 反馈重试更新原AnswerRecord，当前允许结束后重试反馈，不会自动刷新已生成总结。总结输入只含会话岗位快照与真实题目/回答/反馈，不包含保存的resume_snapshot。
+- 尝试日志只保存键、状态、时间和失败码；expired以failed状态加FEEDBACK_ATTEMPT_EXPIRED或SUMMARY_ATTEMPT_EXPIRED记录，不新增第四种业务status。上限默认包含首次共5次，配置见environment.md。
+- 新会话summary默认为pending；active状态下并不表示已调用总结模型。当前页面对active和超时pending的提示/恢复入口、模型提供方硬超时与SDK自动重试、旧快照嵌套文本隐私、同尝试结果重复回写仍需补充验收，不能仅凭固定3项通过宣称完成。
 
 测试repository可注入隔离ORM，模型替身记录调用及抛超时；生产默认不能固定返回总结。成员2经公开服务读取脱敏评估材料，不直接读取其他用户历史。
 
@@ -145,5 +158,105 @@
   "scope": "88 项交付单元测试通过。首次网关镜像改走已授权 ACR 专用基础设施标签，按 digest/image ID 验证；业务接口和固定验收保持原样，现有完整业务 14 failures/3 errors 为 501 骨架。",
   "limitations": "此交付验证不代表五模块实现；没有重启线上后端、迁移数据或真实模型调用。此前 SSH 传输超时，审计确认旧容器未变。",
   "evidence": "ci/test_server_maintenance.py; ci/cutover_smoke.py; Actions 41311002510; docs/deployment-status.md"
+}
+```
+
+### 2026-11-02 发布门禁复核
+
+本次没有实现 career-platform 的练习记录业务，因公共导航变更仍需同步本模块记录。会话创建、逐题快照、幂等回答、结束总结和显式重试等固定用例仍失败，既有面试页面展示不能代表 records complete。
+
+```acceptance-record
+{
+  "commit": "c34a98a6a2d0538e3b9c47d53f2e0c066e326202",
+  "command": "python ci/project_acceptance.py --stage scaffold --output .runtime/gate-repair/scaffold.json; python ci/project_acceptance.py --stage complete --module all --output .runtime/gate-repair/complete.json",
+  "result": "failed",
+  "environment": "2026-11-02；Windows；现有 D:/python/python.exe；隔离内存 SQLite；PLATFORM_TEST_MYSQL=0",
+  "scope": "骨架 7 项通过；固定完整业务验收 17 项为 14 failures、3 errors，五模块 501 / FeatureNotImplemented。测试提交 c34a98a 与部署目标 master 0f64e4e 的 tree 均为 cb53fd5f04e5e5197b289dadef18a8aea55c48b3。",
+  "limitations": "五个业务模块尚未实现，本次未修改业务代码、固定测试或门禁。未重新验证 MySQL、真实模型或浏览器，未执行镜像发布、服务器重建或线上迁移。用户选择保留门禁，完整验收通过前不部署。",
+  "evidence": ".runtime/gate-repair/scaffold.json; .runtime/gate-repair/scaffold.log; .runtime/gate-repair/complete.json; .runtime/gate-repair/complete.log; GitHub Actions 41456388774（文档门禁失败、应用测试/双镜像/联调成功）；41467510972（只读 SSH 审计成功）"
+}
+```
+
+
+### 2026-11-09 文本检索演示发布候选
+
+本次新增经过 Token 鉴权的 `POST /api/career-platform/questions/demo-retrieve/`，与正式 `questions/retrieve/` 隔离。页面 `/career-platform/practice` 改为明确标注的文本检索演示，提供条件筛选、排名与来源证据。候选为 `rag/demo.py` 专门编写的9条虚构演示材料，不导入测试 fixture、不写数据库、不创建会话或反馈；pending/restricted 不返回。正式五模块服务和旧自由面试边界保留。共享 URL 新增使本次按原规则核对六份文档与全部固定验收，不降低既有用例。详细输入、输出和范围见成员4说明。
+
+```acceptance-record
+{
+  "commit": "93640dd + dirty",
+  "command": "python -m unittest discover -s backend/tests -p test_text_retrieval.py -v; python -m unittest discover -s backend/tests -p test_retrieval_demo.py -v; node --test frontend/tests/*.test.mjs; node frontend/node_modules/vite/bin/vite.js build (cwd=frontend); python ci/project_acceptance.py --stage scaffold; python ci/project_acceptance.py --stage complete --module all",
+  "result": "failed",
+  "environment": "2026-11-09；Windows；隔离内存 SQLite；本地浏览器通过隔离预览 API 调用真实文本策略，无生产数据",
+  "scope": "文本策略17项、演示接口6项、前端78项和生产构建通过；骨架7项通过。固定完整业务17项仍为14 failures、3 errors，原因是五模块正式服务501。独立演示不冒充正式业务完成。",
+  "limitations": "仅发布候选准备。用户明确授权将标注演示的半成品部署到现有网站；允许使用既有手动发布流程，固定测试和门禁规则不改。未接数据库题库、真实模型、练习记录；远端CI、发布和线上浏览器结果另记。",
+  "evidence": "backend/tests/test_text_retrieval.py; backend/tests/test_retrieval_demo.py; output/retrieval-demo-20261109/scaffold.json; output/retrieval-demo-20261109/complete.json; pre-deploy audit Actions 42551685730"
+}
+```
+
+
+### 2026-11-09 课程页面字体统一
+
+共享页面样式调整：沿用全站无衬线字体，课程标题桌面32px/手机28px，内容标题18px、正文与表单14px、辅助文字12px。仅视觉调整，不改变本模块接口、状态或数据流，不代表业务实现完成。
+
+```acceptance-record
+{
+  "commit": "8607c29",
+  "command": "gh run view 42578102031 --repo vacontinuejatotired/CS-Career-Guide; node --test frontend/tests/*.test.mjs; node frontend/node_modules/vite/bin/vite.js build (cwd=frontend)",
+  "result": "failed",
+  "environment": "2026-11-09；Windows 本地隔离浏览器及 GitHub Actions",
+  "scope": "仅课程页面字体样式。前端78项与生产构建通过；浏览器1440/390px检查五个课程入口和个人中心、简历页，共14视图无横向溢出或JS运行异常。Actions前端检查及镜像构建成功，但共享组件变更缺实施文档导致总门禁失败。",
+  "limitations": "五模块正式业务未完成，未宣称complete通过；本轮完整业务重跑因WSL互操作失败未启动。浏览器使用隔离模拟API，仅初始页面，不覆盖检索结果和全部失败状态。用户已授权半成品演示上线；仅按既有手动流程发布前端，不修改门禁、不部署后端。线上结果另记。",
+  "evidence": "Actions 42578102031；output/playwright/typography-result.txt；frontend/src/features/career-platform/WorkspaceShell.vue；frontend/src/views/career-platform/Practice.vue"
+}
+```
+
+
+### 2026-11-09 课程导航统一
+
+五个课程入口共用CourseNav，保持名称、顺序、选中样式与顶部位置一致；自由模拟面试作为练习页辅助入口。内容轻量淡入，尊重减少动态效果设置；不改变本模块业务实现状态。
+
+```acceptance-record
+{
+  "commit": "66a5159 + dirty",
+  "command": "node --test frontend/tests/*.test.mjs; vite build; playwright-cli run-code --filename output/playwright/course-nav-check.js",
+  "result": "passed",
+  "environment": "2026-11-09；Windows；本地隔离模拟API与Chromium",
+  "scope": "仅统一课程导航和切换样式。78项前端测试、生产构建通过；1440/390px各点击五个入口，共10次切换均为同名同序五项导航、一个当前项、无横向溢出，导航纵向位置同尺寸一致；减少动态效果时动画为none。",
+  "limitations": "不改变五模块正式业务、API、鉴权或数据；passed仅指此次前端专项，不代表五模块complete成功。未调用真实模型；线上发布及服务器运行版本另验收。用户要求验证后直接上线，仅发布前端，沿用既有半成品演示发布流程，不修改门禁。",
+  "evidence": "output/playwright/course-nav-tests.log；output/playwright/course-nav-build.log；output/playwright/course-nav-check.js；output/playwright/course-nav-1440.png；output/playwright/course-nav-390.png"
+}
+```
+
+### 2026-11-10 练习记录与逐题反馈本地实现
+
+本次实现唯一 PracticeStore：创建会话时保存岗位、简历、题目和检索上下文快照；回答先落库并原子认领反馈尝试；结束时先写 ended/ended_at，再在事务外生成总结。新增同题唯一约束、反馈/总结尝试日志、短期 retrieval_id、独立 retry-feedback 接口、历史分页详情和真实失败状态。HTTP 白名单不返回参考答案、尝试日志或私人简历字段。
+
+```acceptance-record
+{
+  "commit": "d1e521d891d5b7f9161acb3125b4fdf57ec766b1 + dirty",
+  "command": "python ci/project_acceptance.py --stage complete --module records; python ci/project_acceptance.py --stage complete --module rag; python -m django test career_platform.tests.test_records_runtime; python -m unittest backend/tests/test_text_retrieval.py -v; node --test frontend/tests/*.test.mjs; vite build; python ci/project_acceptance.py --stage complete --module all",
+  "result": "failed",
+  "environment": "2026-11-10；Windows；隔离内存 SQLite；本地 Node 24；离线 Gateway Spy",
+  "scope": "records 固定3项、rag 固定3项、新增 records runtime 5项、scaffold 7项、组合专项18项、文本检索17项、前端78项和生产构建通过。迁移 --check 无差异。",
+  "limitations": "完整 all 17项仍有8项失败，均来自 catalog/resume 501 及其 integration 前置步骤；不代表 records/rag 专项失败。未执行 MySQL、真实模型、远端 CI、真实浏览器、发布或部署。生产 ModelGateway 仅完成 Adapter 与配置接线，未调用真实供应商。",
+  "evidence": "backend/career_platform/tests/test_records_runtime.py; backend/career_platform/tests/accept_records.py; backend/career_platform/tests/accept_rag.py; frontend/tests/career-platform.test.mjs; local command output"
+}
+```
+
+
+### 2026-11-10 文档与b127df1实现一致性复核
+
+前一条记录中的partial_pass修正为failed，以匹配门禁仅允许passed/failed的约束；其scope仍保留专项通过事实。补充Repository/Service实际输入输出、迁移回填、重试和结束后幂等重放、网页未闭环及尚未验证边界。
+
+```acceptance-record
+{
+  "commit": "b127df1 + dirty",
+  "command": "python -m unittest discover -s ci -p 'test_project*.py' -v; python -m django test career_platform.tests.test_scaffold career_platform.tests.accept_records career_platform.tests.accept_rag career_platform.tests.test_records_runtime --settings=career_platform.test_settings --testrunner=career_platform.tests.runner.FixedAcceptanceRunner --verbosity=1; python ci/project_acceptance.py --stage complete --module all --output .runtime/docs-sync-20261110/all.json; python -m unittest discover -s backend/tests -p 'test_retrieval_demo.py' -v",
+  "result": "failed",
+  "environment": "2026-11-10；Windows；Python 3.12 / Django 4.2.7；隔离内存SQLite、Gateway Spy；文档门禁PyYAML位于忽略目录，不调用真实模型",
+  "scope": "组合专项18/18通过：scaffold7、records固定3、rag固定3、runtime5。完整all17项为9通过8失败；缺口是catalog4、resume3、integration1。文档门禁自测11/11通过，未修改固定验收。此次前端为文档变更，未重新执行构建。",
+  "limitations": "旧检索演示测试仍1失败；Actions 42771897363文档与Backend检查失败，平台数据库验收/后端镜像/部署跳过。本次只同步文档，不补业务或测试代码；MySQL并发、真实模型、浏览器端到端、正式Practice页面交接和部署仍未完成。",
+  "evidence": "ci/check_project_changes.py; ci/test_project_changes.py; backend/career_platform/tests/test_records_runtime.py; backend/tests/test_retrieval_demo.py; .runtime/docs-sync-20261110/all.json（本机忽略产物，可按命令复现）; GitHub Actions 42771897363 job状态查询"
 }
 ```

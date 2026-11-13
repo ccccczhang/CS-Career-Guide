@@ -199,6 +199,8 @@ jobs:
           python -m unittest discover -s backend/tests -p 'test_env_config.py' -v 2>&1 | tee backend-config.log
           python -m unittest discover -s backend/tests -p 'test_deploy_runtime.py' -v 2>&1 | tee backend-deploy.log
           python -m unittest discover -s backend/tests -p 'test_interview.py' -v 2>&1 | tee backend-interview.log
+          python -m unittest discover -s backend/tests -p 'test_text_retrieval.py' -v 2>&1 | tee backend-text-retrieval.log
+          python -m unittest discover -s backend/tests -p 'test_retrieval_demo.py' -v 2>&1 | tee backend-retrieval-demo.log
           python -m unittest discover -s backend/tests -p 'test_asr.py' -v 2>&1 | tee backend-asr.log
           python -m unittest discover -s backend/tests -p 'test_career_path_migrations.py' -v 2>&1 | tee backend-career-path-migrations.log
       - uses: actions/upload-artifact@v4
@@ -513,16 +515,22 @@ jobs:
           COMPONENT: backend
         run: |
           python3 - <<'PY'
-          import json, os
+          import json, os, re
           from pathlib import Path
           record = json.loads((Path(os.environ['RUNNER_TEMP']) / 'published-images.json').read_text())
           component = os.environ['COMPONENT']
           assert record['complete'] is True and record['components'] == [component]
+          digest = record['images'][component]['digest']
+          assert re.fullmatch(r'sha256:[0-9a-f]{64}', digest)
+          assert record['images'][component]['reference'].endswith('@' + digest)
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write('image=' + record['images'][component]['reference'] + '\n')
+              output.write('digest=' + digest + '\n')
           PY
       - name: Upload publication record
+        id: publication-upload
         if: always()
+        continue-on-error: true
+        timeout-minutes: 5
         uses: actions/upload-artifact@v4
         with:
           name: published-backend-${{ github.run_id }}
@@ -530,8 +538,18 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
           overwrite: true
+      - name: Retry publication record upload
+        if: always() && steps.publication-upload.outcome == 'failure'
+        timeout-minutes: 5
+        uses: actions/upload-artifact@v4
+        with:
+          name: published-backend-${{ github.run_id }}
+          path: ${{ runner.temp }}/published-images.json
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true
     outputs:
-      image: ${{ steps.record.outputs.image }}
+      digest: ${{ steps.record.outputs.digest }}
   publish-frontend:
     name: Publish verified frontend image
     needs:
@@ -579,16 +597,22 @@ jobs:
           COMPONENT: frontend
         run: |
           python3 - <<'PY'
-          import json, os
+          import json, os, re
           from pathlib import Path
           record = json.loads((Path(os.environ['RUNNER_TEMP']) / 'published-images.json').read_text())
           component = os.environ['COMPONENT']
           assert record['complete'] is True and record['components'] == [component]
+          digest = record['images'][component]['digest']
+          assert re.fullmatch(r'sha256:[0-9a-f]{64}', digest)
+          assert record['images'][component]['reference'].endswith('@' + digest)
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write('image=' + record['images'][component]['reference'] + '\n')
+              output.write('digest=' + digest + '\n')
           PY
       - name: Upload publication record
+        id: publication-upload
         if: always()
+        continue-on-error: true
+        timeout-minutes: 5
         uses: actions/upload-artifact@v4
         with:
           name: published-frontend-${{ github.run_id }}
@@ -596,8 +620,18 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
           overwrite: true
+      - name: Retry publication record upload
+        if: always() && steps.publication-upload.outcome == 'failure'
+        timeout-minutes: 5
+        uses: actions/upload-artifact@v4
+        with:
+          name: published-frontend-${{ github.run_id }}
+          path: ${{ runner.temp }}/published-images.json
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true
     outputs:
-      image: ${{ steps.record.outputs.image }}
+      digest: ${{ steps.record.outputs.digest }}
   deploy-backend:
     name: Deploy published backend digest
     needs:
@@ -639,13 +673,13 @@ jobs:
           TTS_MODEL: ${{ vars.TTS_MODEL }}
           TTS_VOICE: ${{ vars.TTS_VOICE }}
           DEPLOY_COMPONENT: backend
-          DEPLOY_IMAGE: ${{ needs.publish-backend.outputs.image }}
+          DEPLOY_IMAGE: ${{ format('{0}/{1}/cs-career-guide-backend@{2}', vars.ACR_REGISTRY || secrets.ACR_REGISTRY, vars.ACR_NAMESPACE || secrets.ACR_NAMESPACE, needs.publish-backend.outputs.digest) }}
         run: python3 ci/sync_runtime_env.py
   deploy-frontend:
     name: Deploy published frontend digest
     needs:
       - publish-frontend
-    if: needs.publish-frontend.result == 'success' && github.ref == 'refs/heads/master' && github.repository == 'vacontinuejatotired/CS-Career-Guide' && github.event_name != 'pull_request'
+    if: always() && !cancelled() && needs.publish-frontend.result == 'success' && github.ref == 'refs/heads/master' && github.repository == 'vacontinuejatotired/CS-Career-Guide' && github.event_name != 'pull_request'
       && vars.DEPLOY_ENV_SYNC_ENABLED == 'true' && vars.DEPLOY_FRONTEND_ENABLED == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
@@ -670,7 +704,7 @@ jobs:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
           DEPLOY_COMPONENT: frontend
-          DEPLOY_IMAGE: ${{ needs.publish-frontend.outputs.image }}
+          DEPLOY_IMAGE: ${{ format('{0}/{1}/cs-career-guide-frontend@{2}', vars.ACR_REGISTRY || secrets.ACR_REGISTRY, vars.ACR_NAMESPACE || secrets.ACR_NAMESPACE, needs.publish-frontend.outputs.digest) }}
         run: python3 ci/sync_runtime_env.py
   release-summary:
     name: Release summary

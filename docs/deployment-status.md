@@ -1,5 +1,32 @@
 # 演示部署验收状态与接手记录
 
+## 2026-11-03 双端部署与独立审计通过
+
+按用户本次授权，现有应用改动已通过 GitHub Actions 部署到服务器；五模块完整业务验收跳过，原固定测试、业务变更路径规则及 SSH 校验继续保留。五模块仍为 `501 / FEATURE_NOT_IMPLEMENTED` 骨架，不将跳过写成业务通过。
+
+- 部署版本：`deccc0cd18f647fc43622161ac28fda8789afae6`，已合并 [PR #19](https://github.com/vacontinuejatotired/CS-Career-Guide/pull/19) 的 publisher digest 输出修复；此前现有应用与文档改动均包含在此版本中。
+- [master 发布 41611783087](https://github.com/vacontinuejatotired/CS-Career-Guide/actions/runs/41611783087) 整体成功：前后端测试、交付配置、文档门禁、双镜像、完整网关与 SQLite 持久化联调、双端 ACR 发布及两个 SSH 激活任务均通过；`Platform acceptance` 为 skipped。
+- 两份发布记录均为 `complete=true`、源码版本一致、`compatibility=candidate-integration`。frontend digest 为 `sha256:0eaff01c024d2fe0ed67ebc894488eb89e5671c0c12e053ba8a1631bd0914449`；backend digest 为 `sha256:069aa3a67c4c54c694e1f5ce29ee5cee48f2c1946152c8e6d81963ab16c2ea67`。
+- [部署后独立只读审计 41614838351](https://github.com/vacontinuejatotired/CS-Career-Guide/actions/runs/41614838351) 成功：frontend/backend/gateway 均 running、healthy；前后端容器已重建，实际配置镜像及 RepoDigests 与各自发布记录完全一致。
+- 与发布前审计 `41467510972` 比较，gateway 容器与 digest、Compose 项目、各服务命名卷及端口映射保持；SQLite/static/media 卷保留，Watchtower 继续 exited。审计记录不包含真实环境变量值。
+- 部署后公网只读 HTTP 检查：`/`、`/login` 均 200 且包含 SPA 入口，`/static/admin/css/base.css` 为 200，未携带 Token 的 `/api/users/profile/` 为预期 401。
+- 后端正常启动入口先执行 `migrate` 再启动 Gunicorn，已完成启动并健康；包含 `users.0013_normalize_gender_choices`，但本次未独立读取迁移表或用户数据，不声称完成数据库逐项审计。未切换数据库、导入示例业务数据、执行真实模型或浏览器业务验收。
+
+脱敏发布、运行镜像、容器/卷和检查范围记录见 [2026-11-03-deccc0c.json](releases/2026-11-03-deccc0c.json)。以下失败历史保留，不能用其结果覆盖本次成功记录。
+
+## 2026-11-02 授权手动发布与后续重试
+
+用户在同日文档门禁复核后明确要求将现有修改部署到服务器，并跳过五模块业务开发的 CI 检测；该授权替代此前暂停部署的决定，仅适用于本次发布。五模块仍为 501 骨架，本地完整验收的 14 failures、3 errors 保留，不作为已实现或已通过处理。
+
+- 代码版本：`65d9ea711848500edfebcd4ce68eedb967bbc26d`，已合并 [PR #18](https://github.com/vacontinuejatotired/CS-Career-Guide/pull/18) 的六份真实验收记录。
+- 发布入口：[手动 CI/CD 41470153714](https://github.com/vacontinuejatotired/CS-Career-Guide/actions/runs/41470153714)，`master`、`component=all`。本次五模块 `Platform acceptance` 为 skipped；原固定测试、push/PR 路径规则和发布依赖未修改。前后端应用测试、交付配置、双镜像检查、完整容器联调、镜像身份验证与 SSH 健康等待继续执行。
+- 发布前检查：[只读 SSH 审计 41467510972](https://github.com/vacontinuejatotired/CS-Career-Guide/actions/runs/41467510972) 成功，frontend/backend/gateway 均 healthy，Watchtower 为 exited；原前后端 digest 分别为 `eaecc62f23c1b2c2aec66c4467a2e009fc85bec024df83d89dc71269ea1c634f`、`75110f2b4dff6b5488bab73ffd563cf7ed431979e0050d1bdd32bb5b48ea2cf9`。
+- 后端沿用既有启动入口执行迁移，包括已提交的 `users.0013_normalize_gender_choices`；不切换数据库、不导入示例数据、不执行真实模型调用。网关和已有命名卷由原部署保留。
+- 该次双端应用测试、镜像构建、完整容器联调和两端 ACR 发布均成功，五模块完整验收 skipped。首次运行及后续失败任务重试的 SSH 激活均失败，未宣称服务器已更新。
+- 根因：两个 publisher 的日志均出现 `Skip output 'image' since it may contain secret`；registry/namespace 使用 Secrets 时完整仓库引用被 GitHub 丢弃，导致 deploy 的 `DEPLOY_IMAGE` 为空，脚本在 SSH 连接前拒绝执行。单纯重跑失败任务不能修复此问题。
+- 后续只读 SSH 审计 [41609961586](https://github.com/vacontinuejatotired/CS-Career-Guide/actions/runs/41609961586) 成功，证明 Actions 的现有 SSH 通道可用。修复方式为 publisher 仅输出经格式与引用一致性校验的 digest，deploy 在自身环境内使用 ACR 坐标组装完整引用；不降低主机密钥核验、敏感输出保护或镜像版本校验。
+- 修复后的发布与服务器实际 digest 需以新的运行及独立审计记录为准；本段不将现有 501 骨架或跳过的业务验收写成成功。
+
 ## 2026-11-01 独立交付已合并并完成服务器切换
 
 这是当日验收快照，实时操作仍须重新核对 Git/Actions/服务器。[PR #9](https://github.com/vacontinuejatotired/CS-Career-Guide/pull/9) 至 [PR #15](https://github.com/vacontinuejatotired/CS-Career-Guide/pull/15) 已合入本 fork master，代码基线为 `d9395a319be3c99d67b3ff062266ee6d8edee5ce`。最终交付修复的 [PR Actions 41312995286](https://github.com/vacontinuejatotired/CS-Career-Guide/actions/runs/41312995286) 整体成功：两端检查、各自镜像、完整网关/持久化/SSE/IP 联调和真实首次切换均通过；该次纯交付改动按既有路径规则跳过完整业务验收，不代表五模块业务完成。
@@ -134,3 +161,21 @@ master 运行的后端日志明确记录：
 本会话已明确授权并完成服务器部署账号创建和相关 Secrets 配置；后来工作范围调整为现有面试实现的结构重构，本次再补运维文档。没有执行应用重建、模型调用或数据迁移。后续提交、推送、发布和服务器操作按当时明确授权执行，不能将历史文档中的临时授权限制当作当前事实，也不能将账号创建授权扩展为任意服务器变更。
 
 上线顺序：先整理并验证改动，再以部署账号验证 ACR，逐项补服务器 Compose 映射，协调停止旧 Watchtower，最后才启用同步并执行已获授权的发布。回滚前关闭同步开关；自动脚本不加载 digest override，见 [AI 环境同步](ai-env-sync.md) 与 [回滚手册](watchtower-rollback.md)。模拟面试实现与验收边界见 [重构说明](interview-refactor.md)。
+
+
+## 2026-11-09 课程字体统一前端上线
+
+- 样式 PR #22 已合并；部署条件修复 PR #23 已合并至 `63ae3fdd72bb2d0a9be4814201a55cd02de15f29`。修复仅为前端激活补充 `always() && !cancelled()`，原发布成功、仓库/master及部署开关要求保留。
+- PR #22 的原五模块 SQLite/MySQL complete 仍因501/FeatureNotImplemented失败，不将其解释为业务完成。PR #23 与 master 验证42591945685通过双端构建及runner联调；原测试和业务门禁未修改。
+- 合并交付修复时临时关闭 `SPLIT_DELIVERY_RELEASE_ENABLED`，等待自动验证结束后恢复原值true，防止此次共享CI改动发布后端。
+- 用户授权的手动前端发布部署 [42593151066](https://github.com/vacontinuejatotired/CS-Career-Guide/actions/runs/42593151066) 整体成功：前端检查、镜像、发布、前端激活及summary成功；后端构建/发布/激活和完整联调均skipped。独立组件发布不代表五模块业务验收成功。
+- 已发布记录complete=true、components=[frontend]。独立只读服务器审计 [42593666642](https://github.com/vacontinuejatotired/CS-Career-Guide/actions/runs/42593666642) 成功，前端running/healthy且RepoDigest匹配 `sha256:9d980766066ae8bd2e0633382f19b6b5219b850c3fa8875685425f8c68f7ef6e`；backend/gateway均healthy。后端仍为 `sha256:de98d373555230f5610f167184b100d91d0a2f8c79102c21be348d2139458a67`。审计未读取或替换真实环境文件。
+- 本地78项前端测试和生产构建通过；隔离模拟API下五课程页及个人中心、简历页在1440/390px共14视图无横向溢出或JS异常。初始页字体统一；检索结果/失败状态、线上登录后浏览器及真实模型未重新验收，不能以容器健康替代这些验收。
+- 脱敏运维证据位于Actions Artifact：`published-frontend-42593151066`、`split-deployment-audit-42593666642`。线上使用效果仍待用户浏览确认。
+
+
+## 2026-11-09 课程导航统一上线
+
+PR #25合并至`59e086f6bf6cd8ad5297163f807c11cc5d2b2786`，五课程页共用五项导航及一致顶部位置，练习页自由面试改为辅助入口；内容160ms淡入，减少动态效果时禁用。78项前端测试、构建及1440/390px共10次隔离浏览器切换验证通过。PR原SQLite/MySQL正式业务验收仍因FeatureNotImplemented失败，未改门禁。
+
+用户授权的手动仅前端发布部署[42595704965](https://github.com/vacontinuejatotired/CS-Career-Guide/actions/runs/42595704965)整体成功；后端相关构建/发布/部署skipped。独立只读审计[42596613922](https://github.com/vacontinuejatotired/CS-Career-Guide/actions/runs/42596613922)确认frontend healthy且RepoDigest匹配`sha256:18d39353e0fe455d7380df3ee511df36205d660ec41699fb3e9c8512687e00f3`；与审计42593666642相比backend/gateway容器ID未变。未调用真实模型，线上登录后视觉效果待用户确认，不能将单组件发布视作完整业务验收。

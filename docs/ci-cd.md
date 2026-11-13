@@ -32,7 +32,16 @@ changes -> frontend-test -> frontend-image -> publish-frontend -> deploy-fronten
 
 Platform documentation 继续以 PR base / push before 的归属表为准检查模块文档和 acceptance-record。交付编排 ci-cd.yml 仅在前后端既有测试 Job 与基线保持一致时被区分；修改测试命令、跳过条件、continue-on-error 或删除测试仍进入原完整业务门禁。业务代码、公共契约、固定测试/验收规则和未知 workflow 仍按原规则选择 complete。普通前端静态变更不启动 SQLite/MySQL 业务 runner，前端模块路径仍触发原业务验收。混入业务文件不会因同时有交付文件而被豁免。
 
-最初拆分 PR 修改了检查器与 career-platform.yml，因此该批改动需要六份实施记录及原全部业务验收。五个模块当前仍是 501 骨架；本地 17 项 complete 失败如实保留，不能靠降低固定测试标准使发布通过。交付验证和业务完成分开记录。
+最初拆分 PR 修改了检查器与 career-platform.yml，因此该批改动需要六份实施记录及原全部业务验收。当时五模块均为501骨架；截至b127df1，evaluation的question任务及records/rag已有实现，完整all仍因catalog/resume和integration前置步骤失败。不能靠降低固定测试标准使发布通过，交付验证和业务完成继续分开记录。
+
+### 文档门禁常见失败与本次范围（2026-11-10）
+
+- 共享归属路径变更要求00至05六份实施文档全部在变更集合中；只补负责模块的说明不够。
+- 每份要求文档的最后一个acceptance-record必须是有效JSON，包含commit、command、result、environment、scope、limitations、evidence；commit须实际SHA，可加“ + dirty”。非首次骨架result仅允许passed或failed，partial_pass不合法。
+- 只更新正文、复用原结构化验收记录仍失败。专项成功而完整业务失败时，可在scope写清专项通过，并以failed表示整体验收失败，不能用模糊成功覆盖阻塞。
+- b127df1对应Actions 42771897363的Platform documentation失败；本地复现缺01/02/03、00/04记录未更新、05结果枚举不合法。此次文档修订按原规则补齐，不修改CI代码或测试。
+- 同次Backend checks失败步骤为Run configuration tests，平台数据库验收和Backend image被跳过。当时旧demo测试仍要求正式retrieve返回501；后续c117908已修正隔离回归断言，专项结果见04实施文档。原运行的失败仍是历史事实，修复后的远端结果须按对应提交查询。
+- 新的纯文档提交即便检查成功，也不代表旧代码提交的镜像、数据库验收、完整业务或部署已通过；若要验证代码修复，应对包含该修复的候选重新执行对应检查。
 
 2026-11-01 用户明确授权保留并说明此既有业务失败后合并拆分 PR、更新服务器。该授权不改变测试结果或固定规则。首次合并关闭发布与自动激活，服务器操作通过手动 `Split delivery maintenance` workflow 的严格 SSH 核验通道执行；当前 `audit` 只输出镜像/容器/端口/卷等选定元数据，不读取或替换真实 `.env` 内容，不输出展开的 Compose 或容器环境值。
 
@@ -55,6 +64,8 @@ Platform documentation 继续以 PR base / push before 的归属表为准检查�
 ACR_REGISTRY/ACR_NAMESPACE 仅 publisher 从 Variables 或同名 Secrets 读取（Variables 优先）；ALIYUN_ACR_USERNAME/ALIYUN_ACR_PASSWORD 用于登录。构建/联调不读取注册表凭据。镜像缓存 scope 仍按两端分别设置，关闭 provenance/SBOM 保留现有 ACR 兼容。
 
 `ci/release_images.py verify/publish --component frontend` 或 backend 只需要对应归档；不指定组件的旧 CLI 保持双组件兼容。可重复 --component，但空/未知/重复选择会拒绝。每组件先推 sha-<7位SHA> 和可选版本标签，再推 latest；核对每次 manifest digest 一致。
+
+发布记录上传增加一次独立重试：首次 `actions/upload-artifact` 失败后才执行第二次上传，两次各限制 5 分钟；使用相同名称和 `overwrite=true`，不重新推送镜像。首次失败可恢复，但第二次失败仍阻止 publisher 成功与自动部署，不能将记录归档改成可选。digest 输出继续来自本地 `complete=true` 发布记录的严格核验。此调整应对 Actions 42777621647 中镜像已推送、Artifact 服务超时导致的发布任务失败，不保证外部服务故障一定恢复。对应离线结构回归为 `python -m unittest discover -s ci -p test_publication_upload.py -v`；真实上传恢复需由 Actions 验证。
 
 `published-frontend-<run-id>` / `published-backend-<run-id>` 各自保存 `published-images.json`，含 components、compatibility（component-contracts / candidate-integration / not-recorded）、完整 commit、image ID、标签、digest/reference 与 complete。complete=false 是部分失败，不可部署；latest/SHA tag 可改写，精确恢复用 digest。两个 publisher 相互独立，不承诺两端发布原子性。
 
@@ -81,3 +92,13 @@ ACR_REGISTRY/ACR_NAMESPACE 仅 publisher 从 Variables 或同名 Secrets 读取�
 首次网关维护的镜像传输与日常构建缓存不同。SSH 大归档曾超时，维护任务改为 runner 用既有 ACR 凭据发布专用 `gateway-nginx-<imageID>` 基础设施标签，按 digest 校验后由服务器拉取；不改前后端 `latest`/SHA 标签，日常单端发布不执行该步骤。只读 audit 不传入 ACR 凭据。
 
 2026-11-01 最终安装与独立审计成功后，发布总开关和三项分端部署开关已开启。实际 digest、单端重建、保留后端与验收边界见[部署状态](deployment-status.md)；不能把启用开关理解为已经重新发布/部署 backend。
+
+
+## 2026-11-09 检索演示离线回归
+
+后端测试任务增加 `test_text_retrieval.py` 和 `test_retrieval_demo.py`，验证真实文本策略和演示接口鉴权、输入校验、来源、许可过滤，接口测试禁止数据库访问。原业务固定 complete 测试、所有跳过条件及发布依赖不变。手动发布按既有 workflow_dispatch 规则计算空业务差异，可能跳过完整业务验收；这仅用于用户明确授权的半成品演示发布，不能报告为业务验收通过。
+
+
+## 2026-11-09 前端独立激活条件修复
+
+手动前端发布运行42579875709已成功发布镜像，但前端激活因上游依赖链中未选中后端的skipped状态被GitHub隐式success条件跳过。前端deploy条件增加`always() && !cancelled()`，仍严格要求frontend publisher成功、本fork/master、非PR及原部署开关；不改变业务门禁、后端部署或测试Job。修复后真实激活及线上验证另记，不将原失败运行视为部署成功。

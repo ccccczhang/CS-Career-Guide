@@ -1,0 +1,91 @@
+package com.cscareerguide.app
+
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.printToLog
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.Assert.assertTrue
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+
+@RunWith(AndroidJUnit4::class)
+class CareerPrepFlowTest {
+    @get:Rule
+    val composeRule = createAndroidComposeRule<MainActivity>()
+
+    @Test
+    fun userCanBrowseJobsOpenResumeAndFinishARealInterview() {
+        login()
+
+        composeRule.onNodeWithTag("tab_career").performClick()
+        waitForTag("screen_company_reviews")
+        composeRule.onNodeWithTag("hunting_tab_red").performClick()
+        assertTrue(
+            composeRule.onAllNodesWithText("红榜 · 值得关注")
+                .fetchSemanticsNodes()
+                .isNotEmpty(),
+        )
+
+        composeRule.onNodeWithTag("company_resume").performClick()
+        waitForTag("screen_resume")
+        composeRule.onNodeWithTag("resume_pane_preview").performClick()
+        waitForTag("resume_preview")
+        composeRule.onNodeWithTag("route_back").performClick()
+        waitForTag("screen_company_reviews")
+
+        composeRule.onNodeWithTag("tab_learn").performClick()
+        waitForTag("screen_interview")
+        composeRule.onNodeWithTag("interview_start").performScrollTo().performClick()
+        waitForTag("interview_timer")
+        composeRule.waitUntil(timeoutMillis = 60_000) {
+            composeRule.onAllNodesWithTag("interview_message_interviewer")
+                .fetchSemanticsNodes()
+                .isNotEmpty() &&
+                composeRule.onAllNodesWithText("面试官正在组织问题…")
+                    .fetchSemanticsNodes()
+                    .isEmpty()
+        }
+
+        composeRule.onNodeWithTag("interview_finish").performScrollTo().performClick()
+        composeRule.waitUntil(timeoutMillis = 120_000) {
+            composeRule.onAllNodesWithText("面试复盘 · 技术面")
+                .fetchSemanticsNodes()
+                .isNotEmpty() ||
+                composeRule.onAllNodesWithTag("interview_error")
+                    .fetchSemanticsNodes()
+                    .isNotEmpty()
+        }
+        if (composeRule.onAllNodesWithTag("interview_error").fetchSemanticsNodes().isNotEmpty()) {
+            composeRule.onNodeWithTag("interview_error").printToLog("INTERVIEW_ERROR")
+        }
+        assertTrue(
+            composeRule.onAllNodesWithText("面试复盘 · 技术面")
+                .fetchSemanticsNodes()
+                .isNotEmpty(),
+        )
+    }
+
+    private fun login() {
+        composeRule.waitUntil(timeoutMillis = 5_000) {
+            composeRule.onAllNodesWithTag("screen_home").fetchSemanticsNodes().isNotEmpty() ||
+                composeRule.onAllNodesWithTag("login_username").fetchSemanticsNodes().isNotEmpty()
+        }
+        if (composeRule.onAllNodesWithTag("screen_home").fetchSemanticsNodes().isNotEmpty()) return
+        composeRule.onNodeWithTag("login_username").performTextInput(ServerTestAccount.username)
+        composeRule.onNodeWithTag("login_password").performTextInput(ServerTestAccount.password)
+        composeRule.onNodeWithTag("login_submit").performScrollTo().performClick()
+        waitForTag("screen_home")
+    }
+
+    private fun waitForTag(tag: String) {
+        composeRule.waitUntil(timeoutMillis = 5_000) {
+            composeRule.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
+        }
+    }
+}
